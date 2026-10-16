@@ -43,6 +43,9 @@ python3 -m margin import sample/notes.md
 | `import-apple-books` | Import highlights and notes from Apple Books on this Mac |
 | `export OUT.csv` / `export OUT.zip` | Export everything as CSV or zipped Markdown |
 | `digest [--dry-run]` | Email today's review (`--dry-run` prints it instead) |
+| `setup-email` | Set up the daily email (password goes in the Keychain) |
+| `daily` | Morning job: Apple Books import, then email |
+| `install-mac [--time HH:MM] [--port P]` / `uninstall-mac` | Run in the background on macOS |
 
 ### Apple Books
 
@@ -50,18 +53,35 @@ Margin reads Books' own databases in `~/Library/Containers/com.apple.iBooksX/Dat
 
 If macOS blocks access, open **System Settings → Privacy & Security → Full Disk Access**, turn it on for **Terminal**, then restart Terminal.
 
+### Run in the background on a Mac
+
+```sh
+python3 -m margin install-mac            # morning job at 06:00; use --time 07:30 to change it
+```
+
+This sets up two macOS LaunchAgents (`~/Library/LaunchAgents/com.margin.*.plist`):
+
+- **com.margin.server** starts Margin at login and restarts it if it stops, so http://127.0.0.1:8080 is always available without Terminal.
+- **com.margin.daily** runs `python3 -m margin daily` every morning. It imports new Apple Books highlights, then sends the email (if set up). If the Mac is asleep at that time, it runs on wake.
+
+It's safe to re-run (for example, to change the time). Logs are in `~/.margin/logs/`. To stop and remove both jobs: `python3 -m margin uninstall-mac`.
+
+**Full Disk Access for Python:** background jobs don't inherit Terminal's access, so Python needs its own for the Apple Books import. `install-mac` prints the exact path to add under System Settings → Privacy & Security → Full Disk Access.
+
+While the background server is running, don't also start `python3 -m margin serve` by hand: the port will already be in use.
+
 ### Daily email
 
-Set these environment variables, then schedule `python3 -m margin digest` (e.g. cron `0 6 * * *` for 06:00):
+```sh
+python3 -m margin setup-email
+```
 
-| Variable | Example |
-| --- | --- |
-| `MARGIN_SMTP_HOST` | `smtp.gmail.com` |
-| `MARGIN_SMTP_PORT` | `587` (STARTTLS) or `465` (SSL). Default 587 |
-| `MARGIN_SMTP_USER` / `MARGIN_SMTP_PASSWORD` | your SMTP login (use an app password for Gmail/Microsoft 365) |
-| `MARGIN_EMAIL_TO` | where to send it |
-| `MARGIN_EMAIL_FROM` | optional, defaults to the SMTP user |
-| `MARGIN_APP_URL` | optional link back to the app, e.g. `http://localhost:8080` |
+This asks for your SMTP server, login and recipient, saves them to `~/.margin/email.env`, stores the password in the **macOS Keychain** (never in a file), and offers to send a test email. With `install-mac` the email goes out each morning automatically; to send one manually, run `python3 -m margin digest`.
+
+- Gmail: `smtp.gmail.com`, port 587, with an [app password](https://myaccount.google.com/apppasswords) (needs 2-step verification).
+- Microsoft 365: `smtp.office365.com`, port 587. Your admin may need to enable "Authenticated SMTP" for your mailbox.
+
+Environment variables override the file: `MARGIN_SMTP_HOST`, `MARGIN_SMTP_PORT`, `MARGIN_SMTP_USER`, `MARGIN_SMTP_PASSWORD`, `MARGIN_EMAIL_FROM`, `MARGIN_EMAIL_TO`, `MARGIN_APP_URL`.
 
 The email shows the same highlights as that day's in-app review, so answering them in the app keeps both in step.
 

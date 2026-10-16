@@ -407,5 +407,127 @@ class AppleBooksTests(unittest.TestCase):
             httpd.server_close()
 
 
+
+class EmailConfigTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.file = Path(self.tmp.name) / "email.env"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_file_never_contains_password_and_env_wins(self):
+        digest.write_env_file(self.file, {"MARGIN_SMTP_HOST": "smtp.example.com", "MARGIN_SMTP_USER": "v@example.com",
+                                          "MARGIN_EMAIL_TO": "v@example.com", "MARGIN_SMTP_PASSWORD": "secret"})
+        self.assertNotIn("secret", self.file.read_text())
+        self.assertEqual(self.file.stat().st_mode & 0o777, 0o600)
+        with unittest.mock.patch.dict("os.environ", {"MARGIN_EMAIL_TO": "other@example.com",
+                                                     "MARGIN_SMTP_PASSWORD": "pw"}, clear=True):
+            config = digest.load_config(self.file)
+        self.assertEqual(config["MARGIN_SMTP_HOST"], "smtp.example.com")
+        self.assertEqual(config["MARGIN_EMAIL_TO"], "other@example.com")
+        self.assertEqual(config["MARGIN_SMTP_PASSWORD"], "pw")
+        self.assertTrue(digest.is_configured(config))
+
+    def test_send_uses_starttls_and_login(self):
+        config = {"MARGIN_SMTP_HOST": "smtp.example.com", "MARGIN_SMTP_PORT": "587",
+                  "MARGIN_SMTP_USER": "v@example.com", "MARGIN_SMTP_PASSWORD": "pw", "MARGIN_EMAIL_TO": "t@example.com"}
+        with unittest.mock.patch("smtplib.SMTP") as smtp:
+            digest.send(digest.build_message([], "d"), config)
+        server = smtp.return_value.__enter__.return_value
+        smtp.assert_called_once_with("smtp.example.com", 587, timeout=30)
+        server.starttls.assert_called_once()
+        server.login.assert_called_once_with("v@example.com", "pw")
+        self.assertEqual(server.send_message.call_args[0][0]["To"], "t@example.com")
+
+    def test_bad_password_gives_helpful_error(self):
+        import smtplib
+        config = {"MARGIN_SMTP_HOST": "h", "MARGIN_SMTP_USER": "u", "MARGIN_EMAIL_TO": "t"}
+        with unittest.mock.patch("smtplib.SMTP") as smtp:
+            smtp.return_value.__enter__.return_value.login.side_effect = smtplib.SMTPAuthenticationError(535, b"no")
+            with self.assertRaises(RuntimeError) as ctx:
+                digest.send(digest.build_message([], "d"), config)
+        self.assertIn("app password", str(ctx.exception))
+
+    def test_setup_email_without_keychain(self):
+        from margin.__main__ import setup_email
+        answers = iter(["smtp.example.com", "", "v@example.com", "", "n"])
+        with unittest.mock.patch("builtins.input", lambda _: next(answers)), \
+             unittest.mock.patch("shutil.which", return_value=None), \
+             contextlib_redirect():
+            self.assertEqual(setup_email(self.file), 0)
+        saved = digest.read_env_file(self.file)
+        self.assertEqual(saved["MARGIN_SMTP_PORT"], "587")
+        self.assertEqual(saved["MARGIN_EMAIL_TO"], "v@example.com")
+
+
+def contextlib_redirect():
+    import contextlib
+    return contextlib.redirect_stdout(io.StringIO())
+
+
+class DailyJobTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.file = Path(self.tmp.name) / "email.env"
+        self.store = Store(today=Clock())
+        self.store.add_highlights([item("A")])
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def run_daily(self):
+        from margin.__main__ import daily
+        with unittest.mock.patch.dict("os.environ", {}, clear=True), \
+             unittest.mock.patch("sys.platform", "linux"):
+            return daily(self.store, self.file)
+
+    def test_skips_email_when_not_set_up(self):
+        self.assertEqual(self.run_daily(), 0)
+
+    def test_sends_email_when_set_up(self):
+        digest.write_env_file(self.file, {"MARGIN_SMTP_HOST": "h", "MARGIN_SMTP_PORT": "465", "MARGIN_EMAIL_TO": "t"})
+        with unittest.mock.patch("smtplib.SMTP_SSL") as smtp:
+            self.assertEqual(self.run_daily(), 0)
+        smtp.return_value.__enter__.return_value.send_message.assert_called_once()
+
+    def test_reports_failure(self):
+        digest.write_env_file(self.file, {"MARGIN_SMTP_HOST": "h", "MARGIN_EMAIL_TO": "t"})
+        with unittest.mock.patch("smtplib.SMTP", side_effect=OSError("no route")), self.assertLogs(level="ERROR"):
+            self.assertEqual(self.run_daily(), 1)
+
+
+class MacOSTests(unittest.TestCase):
+    def test_plists(self):
+        import plistlib
+        from margin import macos
+        plists = macos.build_plists("/usr/local/bin/python3", "/Users/v/.margin/margin.db", 8080, 6, 30,
+                                    Path("/Users/v/.margin/logs"))
+        server, daily_job = plists[macos.SERVER_LABEL], plists[macos.DAILY_LABEL]
+        self.assertEqual(server["ProgramArguments"][-3:], ["serve", "--port", "8080"])
+        self.assertTrue(server["RunAtLoad"] and server["KeepAlive"])
+        self.assertEqual(daily_job["ProgramArguments"][-1], "daily")
+        self.assertEqual(daily_job["StartCalendarInterval"], {"Hour": 6, "Minute": 30})
+        self.assertIn("--db", daily_job["ProgramArguments"])
+        self.assertTrue((Path(server["WorkingDirectory"]) / "margin" / "__main__.py").exists())
+        for p in plists.values():
+            plistlib.loads(plistlib.dumps(p))  # valid plist
+
+    def test_parse_time(self):
+        from margin import macos
+        self.assertEqual(macos.parse_time("06:00"), (6, 0))
+        for bad in ("6am", "24:00", "07:60"):
+            with self.assertRaises(ValueError):
+                macos.parse_time(bad)
+
+    def test_install_refuses_off_mac(self):
+        from margin import macos
+        with unittest.mock.patch("sys.platform", "linux"), self.assertRaises(RuntimeError):
+            macos.install("/tmp/x.db", 8080, "06:00")
+
+
 if __name__ == "__main__":
     unittest.main()
