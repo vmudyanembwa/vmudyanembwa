@@ -186,7 +186,9 @@ def setup_email(config_file: Path) -> int:
     if _ask("Send a test email now? (y/n)", "y").lower().startswith("y"):
         sample = [{"text": "If this arrived, Margin's daily email is working.", "title": "Margin",
                    "author": "", "note": ""}]
-        digest.send(digest.build_message(sample, "test", config["MARGIN_APP_URL"]), digest.load_config(config_file))
+        msg = digest.build_message(sample, "test", config["MARGIN_APP_URL"])
+        msg.replace_header("Subject", "Margin: test email")
+        digest.send(msg, digest.load_config(config_file))
         print(f"Test email sent to {config['MARGIN_EMAIL_TO']}. Check your inbox (and spam folder).")
     return 0
 

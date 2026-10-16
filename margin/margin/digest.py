@@ -14,8 +14,10 @@ import logging
 import os
 import shutil
 import smtplib
+import ssl
 import subprocess
 from email.message import EmailMessage
+from email.utils import formatdate, make_msgid
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -100,22 +102,35 @@ def send(msg: EmailMessage, config: dict):
     if missing:
         raise RuntimeError(f"email isn't set up ({', '.join(missing)} missing). "
                            "Run: python3 -m margin setup-email")
-    msg["From"] = config.get("MARGIN_EMAIL_FROM") or config.get("MARGIN_SMTP_USER") or "margin@localhost"
+    sender = config.get("MARGIN_EMAIL_FROM") or config.get("MARGIN_SMTP_USER") or "margin@localhost"
+    msg["From"] = sender
     msg["To"] = config["MARGIN_EMAIL_TO"]
+    # smtplib doesn't add these; spam filters penalise mail without them.
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=sender.rpartition("@")[2] or "localhost")
     port = int(config.get("MARGIN_SMTP_PORT") or 587)
-    smtp_cls = smtplib.SMTP_SSL if port == 465 else smtplib.SMTP
+    host = config["MARGIN_SMTP_HOST"]
+    # smtplib skips certificate checks unless given a context; verify so the password only goes to the real server.
+    tls = ssl.create_default_context()
     try:
-        with smtp_cls(config["MARGIN_SMTP_HOST"], port, timeout=30) as smtp:
+        if port == 465:
+            connection = smtplib.SMTP_SSL(host, port, timeout=30, context=tls)
+        else:
+            connection = smtplib.SMTP(host, port, timeout=30)
+        with connection as smtp:
             if port != 465:
-                smtp.starttls()
+                smtp.starttls(context=tls)
             if config.get("MARGIN_SMTP_USER"):
                 smtp.login(config["MARGIN_SMTP_USER"], config.get("MARGIN_SMTP_PASSWORD", ""))
             smtp.send_message(msg)
     except smtplib.SMTPAuthenticationError:
         raise RuntimeError("the mail server rejected the username/password. Gmail and Microsoft 365 "
                            "need an app password; run setup-email again to update it")
+    except ssl.SSLCertVerificationError as e:
+        raise RuntimeError(f"{host}'s security certificate couldn't be verified ({e.verify_message}); "
+                           "check the server name")
     except (smtplib.SMTPException, OSError) as e:
-        raise RuntimeError(f"couldn't send email via {config['MARGIN_SMTP_HOST']}:{port}: {e}")
+        raise RuntimeError(f"couldn't send email via {host}:{port}: {e}")
 
 
 def send_digest(store, dry_run: bool = False, config: dict | None = None) -> int:

@@ -437,9 +437,13 @@ class EmailConfigTests(unittest.TestCase):
             digest.send(digest.build_message([], "d"), config)
         server = smtp.return_value.__enter__.return_value
         smtp.assert_called_once_with("smtp.example.com", 587, timeout=30)
-        server.starttls.assert_called_once()
+        tls = server.starttls.call_args.kwargs["context"]
+        self.assertEqual(tls.verify_mode, __import__("ssl").CERT_REQUIRED)  # certificate is checked
         server.login.assert_called_once_with("v@example.com", "pw")
-        self.assertEqual(server.send_message.call_args[0][0]["To"], "t@example.com")
+        sent = server.send_message.call_args[0][0]
+        self.assertEqual(sent["To"], "t@example.com")
+        self.assertTrue(sent["Date"])
+        self.assertTrue(sent["Message-ID"].endswith("@example.com>"))
 
     def test_bad_password_gives_helpful_error(self):
         import smtplib
@@ -493,6 +497,7 @@ class DailyJobTests(unittest.TestCase):
         with unittest.mock.patch("smtplib.SMTP_SSL") as smtp:
             self.assertEqual(self.run_daily(), 0)
         smtp.return_value.__enter__.return_value.send_message.assert_called_once()
+        self.assertTrue(smtp.call_args.kwargs["context"].check_hostname)
 
     def test_reports_failure(self):
         digest.write_env_file(self.file, {"MARGIN_SMTP_HOST": "h", "MARGIN_EMAIL_TO": "t"})
