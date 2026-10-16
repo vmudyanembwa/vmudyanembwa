@@ -41,6 +41,7 @@ def parse_kindle(content: str) -> list[dict]:
             continue
         m = _TITLE_AUTHOR.match(header)
         title, author = (m["title"], m["author"]) if m else (header, "")
+        author = ", ".join(a.strip() for a in author.split(";") if a.strip())  # Kindle joins co-authors with ';'
         loc = _LOCATION.search(meta) or _PAGE.search(meta)  # PDFs/some devices only have pages
         added = _ADDED.search(meta)
         item = _blank(title=title.strip(), author=author.strip(), text=body,

@@ -68,7 +68,7 @@ class ImporterTests(unittest.TestCase):
         deep = [t for t in texts if t.startswith("Clarity")]
         self.assertEqual(len(deep), 1)
         self.assertIn("sum of what you focus on", deep[0])
-        self.assertEqual(items[-1]["author"], "David Thomas;Andrew Hunt")
+        self.assertEqual(items[-1]["author"], "David Thomas, Andrew Hunt")
 
     def test_kindle_title_with_parentheses(self):
         content = "Dune (Dune Chronicles 1) (Frank Herbert)\n- Your Highlight on page 1 | Location 5-6 | Added on x\n\nFear is the mind-killer.\n=========="
