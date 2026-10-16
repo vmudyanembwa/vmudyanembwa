@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import export, importers
+from . import apple_books, export, importers
 
 log = logging.getLogger(__name__)
 
@@ -138,6 +138,15 @@ def make_handler(store):
             raise ApiError(HTTPStatus.BAD_REQUEST, str(e))
         result = store.add_highlights(items)
         return {**result, "format": fmt, "found": len(items)}
+
+    @route("POST", "/api/import/apple-books")
+    def import_apple_books(req, q):
+        # Reads the Books databases on the machine running Margin, i.e. your Mac.
+        try:
+            items = apple_books.read_highlights()
+        except apple_books.AppleBooksError as e:
+            raise ApiError(HTTPStatus.BAD_REQUEST, str(e))
+        return {**store.add_highlights(items), "format": "apple_books", "found": len(items)}
 
     @route("GET", "/api/export/markdown")
     def export_md(req, q):

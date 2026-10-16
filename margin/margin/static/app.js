@@ -355,6 +355,26 @@ function renderImport() {
   for (const evName of ['dragleave', 'drop']) drop.addEventListener(evName, () => drop.classList.remove('over'));
   drop.addEventListener('drop', (ev) => { ev.preventDefault(); handleFiles([...ev.dataTransfer.files]); });
 
+  const booksStatus = el('p', { class: 'small', role: 'status' });
+  const booksButton = el('button', {
+    class: 'btn primary', type: 'button',
+    onclick: async () => {
+      booksButton.disabled = true;
+      booksStatus.textContent = 'Reading Apple Books…';
+      try {
+        const r = await api('import/apple-books', { method: 'POST' });
+        booksStatus.textContent = `Found ${plural(r.found, 'highlight')}: ${r.added} added, ${r.skipped} already in your library.`;
+        toast(`${plural(r.added, 'new highlight')} from Apple Books`);
+      } catch (e) { booksStatus.textContent = e.message; }
+      booksButton.disabled = false;
+    },
+  }, 'Import from Apple Books');
+  const appleBooks = el('section', { class: 'card stack' },
+    el('h2', {}, 'Apple Books'),
+    el('p', { class: 'small muted', style: 'margin:0' },
+      'Pulls highlights and notes from Books on this Mac. Run it again any time — only new highlights are added.'),
+    el('div', {}, booksButton), booksStatus);
+
   // Manual single highlight
   const manual = el('form', { class: 'card stack' },
     el('h2', {}, 'Add one highlight'),
@@ -415,6 +435,7 @@ function renderImport() {
             el('li', {}, 'Markdown/text: one highlight per paragraph. Optional first lines ', el('code', {}, '# Title'), ' and ', el('code', {}, 'Author: Name'), '.'),
           )),
       ),
+      appleBooks,
       manual,
       paste,
       el('section', { class: 'card stack' },

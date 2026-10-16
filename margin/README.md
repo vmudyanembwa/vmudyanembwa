@@ -8,6 +8,7 @@ Pure Python standard library (`sqlite3` + `http.server`) with a vanilla-JS front
 
 - **Import** Kindle `My Clippings.txt`, Readwise-style CSV exports, or Markdown/plain text (drag and drop, CLI, or paste). Re-importing is safe: duplicates are skipped, so you can re-import your Kindle file whenever you like.
   - Kindle notes are attached to their highlight, bookmarks are ignored, and when you extended a highlight only the longest version is kept.
+- **Apple Books (Mac)**: one click (or `python3 -m margin import-apple-books`) pulls in your Books highlights and notes. Run it again whenever you like; only new highlights are added.
 - **Daily review**: a fixed set of highlights each day (default 10). For each one, choose when to see it again: **Soon** (days), **Later** (weeks), **Someday** (months), or **Discard**. Intervals grow each time you answer, favourites come back twice as often, and there's a daily streak. Keyboard: `1` `2` `3`, `f` favourite, `n` note, `d` discard.
 - **Library** of books and articles, each with its own highlights.
 - **Notes, tags and favourites** on any highlight.
@@ -39,8 +40,15 @@ python3 -m margin import sample/notes.md
 | --- | --- |
 | `serve [--host H] [--port P]` | Run the web app (binds to localhost by default) |
 | `import FILE [--format kindle\|readwise_csv\|markdown] [--title T] [--author A]` | Import a file; format is guessed if omitted |
+| `import-apple-books` | Import highlights and notes from Apple Books on this Mac |
 | `export OUT.csv` / `export OUT.zip` | Export everything as CSV or zipped Markdown |
 | `digest [--dry-run]` | Email today's review (`--dry-run` prints it instead) |
+
+### Apple Books
+
+Margin reads Books' own databases in `~/Library/Containers/com.apple.iBooksX/Data/Documents/` and copies them first, so Books' data is never modified. Highlights from deleted annotations are skipped, and books are matched by title and author.
+
+If macOS blocks access, open **System Settings → Privacy & Security → Full Disk Access**, turn it on for **Terminal**, then restart Terminal.
 
 ### Daily email
 

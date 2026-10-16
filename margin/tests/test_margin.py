@@ -302,5 +302,103 @@ class ApiTests(unittest.TestCase):
 
 
 
+
+def make_fake_apple_books(root: Path):
+    """Minimal copies of Apple Books' two databases, using the real table and column names."""
+    (root / "AEAnnotation").mkdir(parents=True)
+    (root / "BKLibrary").mkdir(parents=True)
+    import sqlite3
+    lib = sqlite3.connect(root / "BKLibrary" / "BKLibrary-1-091020131601.sqlite")
+    lib.executescript("""
+        CREATE TABLE ZBKLIBRARYASSET (Z_PK INTEGER PRIMARY KEY, ZASSETID TEXT, ZTITLE TEXT, ZAUTHOR TEXT);
+        INSERT INTO ZBKLIBRARYASSET (ZASSETID, ZTITLE, ZAUTHOR) VALUES
+            ('BOOK1', 'Born a Crime', 'Trevor Noah'),
+            ('BOOK2', 'Thinking, Fast and Slow', 'Daniel Kahneman');
+    """)
+    lib.commit()
+    lib.close()
+    ann = sqlite3.connect(root / "AEAnnotation" / "AEAnnotation_v10312011_1727_local.sqlite")
+    ann.executescript("""
+        CREATE TABLE ZAEANNOTATION (
+            Z_PK INTEGER PRIMARY KEY, ZANNOTATIONASSETID TEXT, ZANNOTATIONSELECTEDTEXT TEXT,
+            ZANNOTATIONNOTE TEXT, ZANNOTATIONCREATIONDATE TIMESTAMP, ZANNOTATIONDELETED INTEGER,
+            ZPLLOCATIONRANGESTART INTEGER);
+        INSERT INTO ZAEANNOTATION (ZANNOTATIONASSETID, ZANNOTATIONSELECTEDTEXT, ZANNOTATIONNOTE,
+                                   ZANNOTATIONCREATIONDATE, ZANNOTATIONDELETED, ZPLLOCATIONRANGESTART) VALUES
+            ('BOOK1', 'Language, even more than colour, defines who you are to people.', 'Great line', 750000000, 0, 20),
+            ('BOOK1', 'We tell people to follow their dreams.', NULL, 749000000, 0, 10),
+            ('BOOK1', 'This one was deleted', NULL, 749000000, 1, 30),
+            ('BOOK1', NULL, NULL, 749000000, 0, 40),
+            ('BOOK2', 'Nothing in life is as important as you think it is, while you are thinking about it.', NULL, 760000000, 0, 5),
+            ('UNKNOWN', 'Highlight from a book no longer in the library', NULL, NULL, 0, 1);
+    """)
+    ann.commit()
+    ann.close()
+
+
+class AppleBooksTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "Documents"
+        make_fake_apple_books(self.root)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_reads_highlights_in_order(self):
+        from margin import apple_books
+        items = apple_books.read_highlights(*apple_books.find_databases(self.root))
+        texts = [i["text"] for i in items]
+        self.assertEqual(len(items), 4)  # deleted and empty rows skipped
+        self.assertNotIn("This one was deleted", texts)
+        crime = [i for i in items if i["title"] == "Born a Crime"]
+        self.assertEqual(crime[0]["text"], "We tell people to follow their dreams.")  # reading order
+        self.assertEqual(crime[1]["note"], "Great line")
+        self.assertEqual(crime[1]["author"], "Trevor Noah")
+        self.assertTrue(crime[1]["highlighted_at"].startswith("2024-"))
+        self.assertIn("Unknown book", {i["title"] for i in items})
+
+    def test_missing_data_gives_clear_error(self):
+        from margin import apple_books
+        with self.assertRaises(apple_books.AppleBooksError) as ctx:
+            apple_books.find_databases(Path(self.tmp.name) / "nothing")
+        self.assertIn("Open Books", str(ctx.exception))
+
+    def test_cli_import_is_idempotent(self):
+        import contextlib
+        from margin.__main__ import main
+        from margin import apple_books
+        ann, lib = apple_books.find_databases(self.root)
+        db = Path(self.tmp.name) / "m.db"
+        args = ["--db", str(db), "import-apple-books", "--annotations", str(ann), "--library", str(lib)]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(main(args), 0)
+            self.assertEqual(main(args), 0)
+        lines = out.getvalue().splitlines()
+        self.assertEqual(lines[0], "Apple Books: 4 found, 4 added, 0 already present")
+        self.assertEqual(lines[1], "Apple Books: 4 found, 0 added, 4 already present")
+
+    def test_api_reports_missing_books(self):
+        from margin import apple_books
+        store = Store(today=Clock())
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(store))
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            with unittest.mock.patch.object(apple_books, "CONTAINER", Path(self.tmp.name) / "none"):
+                req = urllib.request.Request(f"http://127.0.0.1:{httpd.server_address[1]}/api/import/apple-books", method="POST")
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    urllib.request.urlopen(req)
+                self.assertEqual(ctx.exception.code, 400)
+                self.assertIn("Apple Books", json.loads(ctx.exception.read())["error"])
+            with unittest.mock.patch.object(apple_books, "CONTAINER", self.root):
+                with urllib.request.urlopen(req) as res:
+                    self.assertEqual(json.loads(res.read())["added"], 4)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+
 if __name__ == "__main__":
     unittest.main()

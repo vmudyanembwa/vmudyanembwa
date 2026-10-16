@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import digest, export, importers
+from . import apple_books, digest, export, importers
 from .db import Store
 
 DEFAULT_DB = os.environ.get("MARGIN_DB", str(Path.home() / ".margin" / "margin.db"))
@@ -28,6 +28,10 @@ def main(argv=None) -> int:
     p.add_argument("--title", default="", help="source title for markdown/text files")
     p.add_argument("--author", default="")
 
+    p = sub.add_parser("import-apple-books", help="import highlights and notes from Apple Books (macOS)")
+    p.add_argument("--annotations", type=Path, help="AEAnnotation*.sqlite (default: found automatically)")
+    p.add_argument("--library", type=Path, help="BKLibrary*.sqlite (default: found automatically)")
+
     p = sub.add_parser("digest", help="email today's review (configure with MARGIN_SMTP_* env vars)")
     p.add_argument("--dry-run", action="store_true", help="print the email instead of sending it")
 
@@ -42,7 +46,7 @@ def main(argv=None) -> int:
     store = Store(args.db)
     try:
         return run(args, store)
-    except (OSError, ValueError, RuntimeError) as e:
+    except (OSError, ValueError, RuntimeError, apple_books.AppleBooksError) as e:
         logging.error("%s", e)
         return 1
     finally:
@@ -60,6 +64,10 @@ def run(args, store) -> int:
         items = importers.parse(fmt, content, **kw)
         result = store.add_highlights(items)
         print(f"{args.file.name} ({fmt}): {len(items)} found, {result['added']} added, {result['skipped']} already present")
+    elif args.command == "import-apple-books":
+        items = apple_books.read_highlights(args.annotations, args.library)
+        result = store.add_highlights(items)
+        print(f"Apple Books: {len(items)} found, {result['added']} added, {result['skipped']} already present")
     elif args.command == "digest":
         n = digest.send_digest(store, dry_run=args.dry_run)
         if not args.dry_run:
