@@ -365,6 +365,13 @@ class AppleBooksTests(unittest.TestCase):
             apple_books.find_databases(Path(self.tmp.name) / "nothing")
         self.assertIn("Open Books", str(ctx.exception))
 
+    def test_permission_denied_is_reported_as_such(self):
+        from margin import apple_books
+        with unittest.mock.patch("os.listdir", side_effect=PermissionError("Operation not permitted")):
+            with self.assertRaises(apple_books.AppleBooksError) as ctx:
+                apple_books.find_databases(self.root)
+        self.assertIn("Full Disk Access", str(ctx.exception))
+
     def test_cli_import_is_idempotent(self):
         import contextlib
         from margin.__main__ import main

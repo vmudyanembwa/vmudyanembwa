@@ -6,6 +6,7 @@ writing or locked while Books is running.
 """
 
 import logging
+import os
 import shutil
 import sqlite3
 import tempfile
@@ -25,16 +26,24 @@ class AppleBooksError(Exception):
 def find_databases(root: Path | None = None) -> tuple[Path, Path]:
     """Locate the annotation and library databases. File names carry a version suffix, hence the glob."""
     root = root or CONTAINER
-    try:
-        annotations = sorted((root / "AEAnnotation").glob("AEAnnotation*.sqlite"))
-        library = sorted((root / "BKLibrary").glob("BKLibrary*.sqlite"))
-    except PermissionError:
-        raise AppleBooksError(_PERMISSION_HELP)
-    if not annotations or not library:
-        raise AppleBooksError(
-            "Couldn't find Apple Books data. Open Books on this Mac at least once, "
-            f"and check that this folder exists: {root}")
-    return annotations[-1], library[-1]
+    # List folders explicitly: Path.glob() silently returns nothing when macOS denies access,
+    # which would make a permission problem look like missing data.
+    found = {}
+    for folder, prefix in (("AEAnnotation", "AEAnnotation"), ("BKLibrary", "BKLibrary")):
+        try:
+            names = os.listdir(root / folder)
+        except PermissionError:
+            raise AppleBooksError(_PERMISSION_HELP)
+        except FileNotFoundError:
+            names = []
+        matches = sorted(n for n in names if n.startswith(prefix) and n.endswith(".sqlite"))
+        if not matches:
+            raise AppleBooksError(
+                "Couldn't find Apple Books data. Open Books on this Mac at least once, and make sure "
+                "Terminal has Full Disk Access (System Settings → Privacy & Security → Full Disk Access). "
+                f"Looked in: {root / folder}")
+        found[folder] = root / folder / matches[-1]
+    return found["AEAnnotation"], found["BKLibrary"]
 
 
 _PERMISSION_HELP = (
