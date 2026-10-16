@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Calorie Tracker</title>
+  <meta name="description" content="Track daily calories and macros by meal. Data stays in your browser.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Ccircle cx=%2716%27 cy=%2716%27 r=%2712%27 fill=%27none%27 stroke=%27%232f8a5b%27 stroke-width=%275%27/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Calorie Tracker</h1>
+    <button id="settings-btn" class="btn ghost" type="button">Goals &amp; profile</button>
+  </header>
+
+  <main>
+    <nav class="date-nav" aria-label="Choose day">
+      <button id="prev-day" class="btn icon" type="button" aria-label="Previous day">‹</button>
+      <label class="date-label">
+        <span id="date-title">Today</span>
+        <input id="date-input" type="date">
+      </label>
+      <button id="next-day" class="btn icon" type="button" aria-label="Next day">›</button>
+    </nav>
+
+    <section class="card summary" aria-labelledby="summary-h">
+      <h2 id="summary-h" class="sr-only">Daily summary</h2>
+      <div class="ring-wrap">
+        <svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
+          <circle class="ring-track" cx="60" cy="60" r="52"></circle>
+          <circle id="ring-fill" class="ring-fill" cx="60" cy="60" r="52"></circle>
+        </svg>
+        <div class="ring-text">
+          <strong id="cal-remaining">0</strong>
+          <span id="cal-remaining-label">kcal left</span>
+        </div>
+      </div>
+      <dl class="totals">
+        <div><dt>Goal</dt><dd id="cal-goal">0</dd></div>
+        <div><dt>Eaten</dt><dd id="cal-eaten">0</dd></div>
+      </dl>
+      <div class="macros" id="macros"></div>
+    </section>
+
+    <section id="meals" aria-label="Meals"></section>
+
+    <section class="card" aria-labelledby="week-h">
+      <h2 id="week-h">Last 7 days</h2>
+      <div id="week-chart" class="week-chart"></div>
+      <p id="week-avg" class="muted"></p>
+    </section>
+
+    <section class="card data-tools" aria-labelledby="data-h">
+      <h2 id="data-h">Your data</h2>
+      <p class="muted">Everything is stored in this browser only. Export a backup to move it to another device.</p>
+      <div class="row">
+        <button id="export-btn" class="btn" type="button">Export JSON</button>
+        <label class="btn">Import JSON<input id="import-input" type="file" accept="application/json" hidden></label>
+      </div>
+    </section>
+  </main>
+
+  <!-- Add food dialog -->
+  <dialog id="add-dialog" aria-labelledby="add-h">
+    <form method="dialog" id="add-form" class="dialog-body">
+      <h2 id="add-h">Add to <span id="add-meal-name">breakfast</span></h2>
+
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" class="tab" data-tab="search" aria-selected="true">Search</button>
+        <button type="button" role="tab" class="tab" data-tab="custom" aria-selected="false">Custom</button>
+      </div>
+
+      <div data-panel="search">
+        <label class="field">
+          <span>Food</span>
+          <input id="food-search" type="search" placeholder="e.g. banana, chicken, rice" autocomplete="off">
+        </label>
+        <ul id="search-results" class="results" role="listbox"></ul>
+      </div>
+
+      <div data-panel="custom" hidden>
+        <label class="field"><span>Name</span><input id="c-name" type="text"></label>
+        <label class="field"><span>Serving</span><input id="c-serving" type="text" placeholder="e.g. 1 bowl"></label>
+        <div class="grid4">
+          <label class="field"><span>kcal</span><input id="c-cal" type="number" min="0" step="1" inputmode="decimal"></label>
+          <label class="field"><span>Protein g</span><input id="c-protein" type="number" min="0" step="0.1" inputmode="decimal"></label>
+          <label class="field"><span>Carbs g</span><input id="c-carbs" type="number" min="0" step="0.1" inputmode="decimal"></label>
+          <label class="field"><span>Fat g</span><input id="c-fat" type="number" min="0" step="0.1" inputmode="decimal"></label>
+        </div>
+        <label class="check"><input id="c-save" type="checkbox" checked> Save to my foods</label>
+      </div>
+
+      <div id="selected-food" class="selected" hidden></div>
+
+      <label class="field servings">
+        <span>Servings</span>
+        <input id="servings" type="number" min="0.25" step="0.25" value="1" inputmode="decimal">
+      </label>
+
+      <p id="add-error" class="error" role="alert"></p>
+
+      <div class="row end">
+        <button value="cancel" class="btn ghost" formnovalidate>Cancel</button>
+        <button id="add-confirm" value="add" class="btn primary">Add</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Settings dialog -->
+  <dialog id="settings-dialog" aria-labelledby="settings-h">
+    <form method="dialog" id="settings-form" class="dialog-body">
+      <h2 id="settings-h">Goals &amp; profile</h2>
+
+      <fieldset>
+        <legend>Calculate from your profile</legend>
+        <div class="grid2">
+          <label class="field"><span>Sex</span>
+            <select id="p-sex"><option value="female">Female</option><option value="male">Male</option></select>
+          </label>
+          <label class="field"><span>Age</span><input id="p-age" type="number" min="13" max="100" inputmode="numeric"></label>
+          <label class="field"><span>Height (cm)</span><input id="p-height" type="number" min="100" max="250" inputmode="decimal"></label>
+          <label class="field"><span>Weight (kg)</span><input id="p-weight" type="number" min="30" max="300" step="0.1" inputmode="decimal"></label>
+        </div>
+        <label class="field"><span>Activity</span><select id="p-activity"></select></label>
+        <label class="field"><span>Goal</span><select id="p-goal"></select></label>
+        <button id="calc-btn" type="button" class="btn">Calculate targets</button>
+        <p id="calc-result" class="muted"></p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Daily targets</legend>
+        <div class="grid4">
+          <label class="field"><span>kcal</span><input id="g-cal" type="number" min="800" max="10000" required></label>
+          <label class="field"><span>Protein g</span><input id="g-protein" type="number" min="0" required></label>
+          <label class="field"><span>Carbs g</span><input id="g-carbs" type="number" min="0" required></label>
+          <label class="field"><span>Fat g</span><input id="g-fat" type="number" min="0" required></label>
+        </div>
+      </fieldset>
+
+      <div class="row end">
+        <button value="cancel" class="btn ghost" formnovalidate>Cancel</button>
+        <button value="save" class="btn primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

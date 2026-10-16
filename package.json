@@ -1,0 +1,11 @@
+{
+  "name": "calorie-tracker",
+  "version": "1.0.0",
+  "description": "A calorie and macro tracking web app that stores data in the browser.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "python3 -m http.server 8000",
+    "test": "node --test tests/*.test.js"
+  }
+}
