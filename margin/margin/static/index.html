@@ -5,30 +5,30 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Margin</title>
   <meta name="description" content="Keep, review and resurface your reading highlights.">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect x=%274%27 y=%273%27 width=%275%27 height=%2726%27 rx=%272%27 fill=%27%23b8891a%27/%3E%3Crect x=%2712%27 y=%277%27 width=%2716%27 height=%273%27 rx=%271.5%27 fill=%27%23777%27/%3E%3Crect x=%2712%27 y=%2714%27 width=%2716%27 height=%273%27 rx=%271.5%27 fill=%27%23777%27/%3E%3Crect x=%2712%27 y=%2721%27 width=%2710%27 height=%273%27 rx=%271.5%27 fill=%27%23777%27/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%232f6fed%27/%3E%3Cpath d=%27M9 23V9l7 8 7-8v14%27 fill=%27none%27 stroke=%27white%27 stroke-width=%273%27 stroke-linejoin=%27round%27 stroke-linecap=%27round%27/%3E%3C/svg%3E">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <header class="topbar">
-    <a href="#/review" class="brand"><span class="brand-mark" aria-hidden="true"></span>Margin</a>
-    <nav aria-label="Main">
-      <a href="#/review" data-nav="review">Review</a>
-      <a href="#/library" data-nav="library">Library</a>
-      <a href="#/search" data-nav="search">Search</a>
-      <a href="#/import" data-nav="import">Add</a>
-    </nav>
+    <div class="topbar-inner">
+      <a href="#/review" class="brand" aria-label="Margin home">
+        <span class="logo" aria-hidden="true"></span><span>Margin</span>
+      </a>
+      <nav aria-label="Main" id="nav"></nav>
+      <a href="#/import" class="btn primary add-btn" id="add-btn"></a>
+    </div>
   </header>
 
   <main id="view" tabindex="-1"></main>
 
   <dialog id="edit-dialog" aria-labelledby="edit-h">
     <form method="dialog" id="edit-form" class="dialog-body">
-      <h2 id="edit-h">Edit highlight</h2>
-      <blockquote id="edit-quote" class="quote small"></blockquote>
-      <label class="field"><span>Note</span><textarea id="edit-note" rows="4"></textarea></label>
-      <label class="field"><span>Tags <small>(comma separated)</small></span><input id="edit-tags" type="text" autocomplete="off"></label>
+      <h2 id="edit-h">Note &amp; tags</h2>
+      <blockquote id="edit-quote" class="dialog-quote"></blockquote>
+      <label class="field"><span>Note</span><textarea id="edit-note" rows="4" placeholder="Add a thought…"></textarea></label>
+      <label class="field"><span>Tags <small>(comma separated)</small></span><input id="edit-tags" type="text" autocomplete="off" placeholder="e.g. habits, leadership"></label>
       <div class="row end">
-        <button value="cancel" class="btn ghost" formnovalidate>Cancel</button>
+        <button value="cancel" class="btn" formnovalidate>Cancel</button>
         <button value="save" class="btn primary">Save</button>
       </div>
     </form>
