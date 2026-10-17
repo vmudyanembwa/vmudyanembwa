@@ -10,12 +10,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import apple_books, export, importers
+from . import apple_books, epub, export, importers
 
 log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 MAX_BODY = 50 * 1024 * 1024  # Kindle clipping files from years of reading can be large
+MAX_BOOK = 300 * 1024 * 1024  # illustrated EPUBs can be big
 
 
 class ApiError(Exception):
@@ -31,7 +32,7 @@ def _int(value: str) -> int:
         raise ApiError(HTTPStatus.BAD_REQUEST, f"expected a number, got {value!r}")
 
 
-def make_handler(store):
+def make_handler(store, books_dir: Path | None = None):
     """Build a request handler bound to one Store. Routes are (method, regex) -> function."""
     routes = []
 
@@ -87,10 +88,22 @@ def make_handler(store):
         if isinstance(tags, str):
             tags = tags.split(",")
         item = {k: str(body.get(k, "")) for k in ("text", "title", "author", "note", "url", "location")}
-        result = store.add_highlights([{**item, "tags": tags}])
-        if not result["added"]:
+        if body.get("doc_id") is not None:
+            # Highlight made in the reader: file it under the book and remember the chapter.
+            doc = store.get_document(_int(body["doc_id"]))
+            if not doc:
+                raise ApiError(HTTPStatus.NOT_FOUND, "book not found")
+            chapter = _int(body.get("chapter", 0))
+            if not 0 <= chapter < doc["chapters"]:
+                raise ApiError(HTTPStatus.BAD_REQUEST, "chapter out of range")
+            title = doc["chapter_titles"][chapter]
+            item.update(title=doc["title"], author=doc["author"], doc_id=doc["id"], chapter=chapter,
+                        location=f"Ch. {chapter + 1}" + (f" · {title}" if title else ""),
+                        highlighted_at=date.today().isoformat())
+        highlight = store.add_highlight({**item, "tags": tags})
+        if not highlight:
             raise ApiError(HTTPStatus.CONFLICT, "that highlight is already in your library")
-        return result
+        return {"added": 1, "skipped": 0, "highlight": highlight}
 
     @route("PATCH", r"/api/highlights/(\d+)")
     def update(req, q, hid):
@@ -148,6 +161,91 @@ def make_handler(store):
             raise ApiError(HTTPStatus.BAD_REQUEST, str(e))
         return {**store.add_highlights(items), "format": "apple_books", "found": len(items)}
 
+    # ---------- Reader ----------
+
+    def book_path(doc: dict) -> Path:
+        if books_dir is None:
+            raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "the reader isn't configured")
+        path = books_dir / doc["file"]
+        if not path.exists():
+            raise ApiError(HTTPStatus.GONE, "the book file is missing; remove it and import it again")
+        return path
+
+    def get_doc(doc_id) -> dict:
+        doc = store.get_document(int(doc_id))
+        if not doc:
+            raise ApiError(HTTPStatus.NOT_FOUND, "book not found")
+        return doc
+
+    @route("GET", "/api/docs")
+    def list_docs(req, q):
+        return store.documents()
+
+    @route("POST", "/api/docs")
+    def upload_doc(req, q):
+        if books_dir is None:
+            raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "the reader isn't configured")
+        data = req.raw_body(MAX_BOOK)
+        try:
+            doc, created = epub.add_to_library(store, data, books_dir)
+        except epub.EpubError as e:
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"{q.get('filename') or 'That file'}: {e}")
+        return {"document": doc, "created": created}
+
+    @route("GET", r"/api/docs/(\d+)")
+    def doc_info(req, q, doc_id):
+        return get_doc(doc_id)
+
+    @route("DELETE", r"/api/docs/(\d+)")
+    def delete_doc(req, q, doc_id):
+        file = store.delete_document(int(doc_id))
+        if file is None:
+            raise ApiError(HTTPStatus.NOT_FOUND, "book not found")
+        if books_dir is not None:
+            (books_dir / file).unlink(missing_ok=True)
+        return {"deleted": True}
+
+    @route("GET", r"/api/docs/(\d+)/chapter/(\d+)")
+    def doc_chapter(req, q, doc_id, index):
+        doc = get_doc(doc_id)
+        index = int(index)
+        if index >= doc["chapters"]:
+            raise ApiError(HTTPStatus.NOT_FOUND, "no such chapter")
+        try:
+            with epub.Book(book_path(doc)) as book:
+                nodes = book.chapter(index)
+        except epub.EpubError as e:
+            raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, str(e))
+        return {"index": index, "title": doc["chapter_titles"][index], "nodes": nodes,
+                "highlights": store.chapter_highlights(doc["id"], index)}
+
+    @route("GET", r"/api/docs/(\d+)/image")
+    def doc_image(req, q, doc_id):
+        doc = get_doc(doc_id)
+        path = q.get("path") or doc["cover"]
+        try:
+            with epub.Book(book_path(doc)) as book:
+                data, ctype = book.image(path)
+        except (KeyError, epub.EpubError):
+            raise ApiError(HTTPStatus.NOT_FOUND, "image not found")
+        # Book images (SVG especially) must never run as a page on this origin.
+        return Download(data, ctype, None, {"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+                                            "Cache-Control": "private, max-age=86400"})
+
+    @route("PUT", r"/api/docs/(\d+)/progress")
+    def doc_progress(req, q, doc_id):
+        body = req.json()
+        doc = get_doc(doc_id)
+        chapter = _int(body.get("chapter", 0))
+        try:
+            position = float(body.get("position", 0))
+        except (TypeError, ValueError):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "position must be a number")
+        if not 0 <= chapter < doc["chapters"]:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "chapter out of range")
+        store.set_progress(doc["id"], chapter, position)
+        return {"saved": True}
+
     @route("GET", "/api/export/markdown")
     def export_md(req, q):
         sources = [store.get_source(s["id"]) for s in store.sources()]
@@ -163,6 +261,14 @@ def make_handler(store):
 
         def log_message(self, fmt, *args):
             log.debug("%s - %s", self.address_string(), fmt % args)
+
+        def raw_body(self, limit: int) -> bytes:
+            length = int(self.headers.get("Content-Length") or 0)
+            if length > limit:
+                raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, f"file is larger than {limit // (1024 * 1024)} MB")
+            if not length:
+                raise ApiError(HTTPStatus.BAD_REQUEST, "no file received")
+            return self.rfile.read(length)
 
         def json(self) -> dict:
             length = int(self.headers.get("Content-Length") or 0)
@@ -193,8 +299,10 @@ def make_handler(store):
                         log.exception("error handling %s %s", method, self.path)
                         return self._send_json({"error": "internal error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
                     if isinstance(result, Download):
-                        return self._send(result.data, result.content_type,
-                                          {"Content-Disposition": f'attachment; filename="{result.filename}"'})
+                        headers = dict(result.headers)
+                        if result.filename:
+                            headers["Content-Disposition"] = f'attachment; filename="{result.filename}"'
+                        return self._send(result.data, result.content_type, headers)
                     return self._send_json(result)
             self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
@@ -240,12 +348,12 @@ def make_handler(store):
 
 
 class Download:
-    def __init__(self, data: bytes, content_type: str, filename: str):
-        self.data, self.content_type, self.filename = data, content_type, filename
+    def __init__(self, data: bytes, content_type: str, filename: str | None, headers: dict | None = None):
+        self.data, self.content_type, self.filename, self.headers = data, content_type, filename, headers or {}
 
 
-def serve(store, host: str = "127.0.0.1", port: int = 8080):
-    httpd = ThreadingHTTPServer((host, port), make_handler(store))
+def serve(store, host: str = "127.0.0.1", port: int = 8080, books_dir: Path | None = None):
+    httpd = ThreadingHTTPServer((host, port), make_handler(store, books_dir))
     log.info("Margin running at http://%s:%d", host, port)
     try:
         httpd.serve_forever()

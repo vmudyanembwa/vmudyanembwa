@@ -1,6 +1,7 @@
 """SQLite storage for sources, highlights, tags and the daily review."""
 
 import hashlib
+import json
 import logging
 import random
 import re
@@ -59,7 +60,27 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS documents (
+    id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    author TEXT NOT NULL DEFAULT '',
+    file TEXT NOT NULL,
+    sha1 TEXT NOT NULL UNIQUE,
+    info TEXT NOT NULL,
+    progress_chapter INTEGER NOT NULL DEFAULT 0,
+    progress_pos REAL NOT NULL DEFAULT 0,
+    added_at TEXT NOT NULL,
+    last_opened TEXT
+);
 """
+
+# Columns added after the first release; created on startup if an older database lacks them.
+MIGRATIONS = {
+    "highlights": [
+        ("doc_id", "INTEGER REFERENCES documents(id) ON DELETE SET NULL"),
+        ("chapter", "INTEGER"),
+    ],
+}
 
 DEFAULT_SETTINGS = {"daily_count": "10"}
 
@@ -88,6 +109,16 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self):
+        with self.conn:
+            for table, columns in MIGRATIONS.items():
+                existing = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+                for name, decl in columns:
+                    if name not in existing:
+                        self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                        log.info("database: added %s.%s", table, name)
 
     def today(self) -> date:
         return self._today()
@@ -133,31 +164,43 @@ class Store:
             self.conn.execute("INSERT OR IGNORE INTO highlight_tags VALUES (?, ?)", (highlight_id, tag_id))
         self.conn.execute("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM highlight_tags)")
 
+    def _insert(self, item: dict) -> int | None:
+        """Insert one highlight; returns its id, or None if it's empty or already present."""
+        text = (item.get("text") or "").strip()
+        if not text:
+            return None
+        title = (item.get("title") or "").strip() or "Untitled"
+        fp = fingerprint(text, title)
+        if self.conn.execute("SELECT 1 FROM highlights WHERE fingerprint = ?", (fp,)).fetchone():
+            return None
+        source_id = self._source_id(title, item.get("author") or "", item.get("url") or "")
+        cur = self.conn.execute(
+            "INSERT INTO highlights(source_id, text, note, location, highlighted_at, created_at,"
+            " fingerprint, due, doc_id, chapter) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (source_id, text, (item.get("note") or "").strip(), item.get("location") or "",
+             item.get("highlighted_at") or "", _now(), fp, self.today().isoformat(),
+             item.get("doc_id"), item.get("chapter")))
+        if item.get("tags"):
+            self._set_tags(cur.lastrowid, item["tags"])
+        return cur.lastrowid
+
     def add_highlights(self, items: list[dict]) -> dict:
         """Insert parsed highlights. Duplicates (by fingerprint) are skipped, so re-imports are safe."""
         added = skipped = 0
         with self._lock, self.conn:
             for item in items:
-                text = (item.get("text") or "").strip()
-                if not text:
+                if self._insert(item) is None:
                     skipped += 1
-                    continue
-                title = (item.get("title") or "").strip() or "Untitled"
-                fp = fingerprint(text, title)
-                if self.conn.execute("SELECT 1 FROM highlights WHERE fingerprint = ?", (fp,)).fetchone():
-                    skipped += 1
-                    continue
-                source_id = self._source_id(title, item.get("author") or "", item.get("url") or "")
-                cur = self.conn.execute(
-                    "INSERT INTO highlights(source_id, text, note, location, highlighted_at, created_at,"
-                    " fingerprint, due) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (source_id, text, (item.get("note") or "").strip(), item.get("location") or "",
-                     item.get("highlighted_at") or "", _now(), fp, self.today().isoformat()))
-                if item.get("tags"):
-                    self._set_tags(cur.lastrowid, item["tags"])
-                added += 1
+                else:
+                    added += 1
         log.info("import: %d added, %d skipped", added, skipped)
         return {"added": added, "skipped": skipped}
+
+    def add_highlight(self, item: dict) -> dict | None:
+        """Insert a single highlight and return it, or None if it was a duplicate."""
+        with self._lock, self.conn:
+            new_id = self._insert(item)
+        return self.get_highlight(new_id) if new_id else None
 
     def update_highlight(self, highlight_id: int, fields: dict) -> dict | None:
         allowed = {"note": str, "favorite": bool, "discarded": bool, "text": str}
@@ -246,6 +289,74 @@ class Store:
             GROUP BY t.id ORDER BY count DESC, t.name COLLATE NOCASE
         """).fetchall()
         return [dict(r) for r in rows]
+
+    # ---------- reader documents (EPUBs) ----------
+
+    def add_document(self, sha1: str, file: str, info: dict) -> tuple[int, bool]:
+        """Register a book. Returns (id, created); the same file added twice returns the existing id."""
+        with self._lock, self.conn:
+            row = self.conn.execute("SELECT id FROM documents WHERE sha1 = ?", (sha1,)).fetchone()
+            if row:
+                return row["id"], False
+            cur = self.conn.execute(
+                "INSERT INTO documents(title, author, file, sha1, info, added_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (info["title"], info["author"], file, sha1, json.dumps(info), _now()))
+            return cur.lastrowid, True
+
+    @staticmethod
+    def _document(row) -> dict:
+        d = dict(row)
+        info = json.loads(d.pop("info"))
+        d.pop("sha1", None)
+        chapters = max(1, info["chapters"])
+        d["progress"] = round(min(1.0, (d["progress_chapter"] + d["progress_pos"]) / chapters), 4)
+        d.update(chapters=info["chapters"], cover=info["cover"], toc=info["toc"],
+                 chapter_titles=info["chapter_titles"], language=info.get("language", ""))
+        return d
+
+    def documents(self) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM documents ORDER BY COALESCE(last_opened, added_at) DESC, id DESC").fetchall()
+        out = []
+        for r in rows:
+            d = self._document(r)
+            for key in ("toc", "chapter_titles"):
+                d.pop(key)
+            out.append(d)
+        return out
+
+    def get_document(self, doc_id: int) -> dict | None:
+        row = self.conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
+        if not row:
+            return None
+        d = self._document(row)
+        src = self.conn.execute("SELECT id FROM sources WHERE title = ? AND author = ?",
+                                (d["title"], d["author"])).fetchone()
+        d["source_id"] = src["id"] if src else None
+        d["highlight_count"] = self.conn.execute(
+            "SELECT COUNT(*) FROM highlights WHERE doc_id = ?", (doc_id,)).fetchone()[0]
+        return d
+
+    def set_progress(self, doc_id: int, chapter: int, position: float) -> bool:
+        with self._lock, self.conn:
+            cur = self.conn.execute(
+                "UPDATE documents SET progress_chapter = ?, progress_pos = ?, last_opened = ? WHERE id = ?",
+                (int(chapter), min(1.0, max(0.0, float(position))), _now(), doc_id))
+        return cur.rowcount > 0
+
+    def delete_document(self, doc_id: int) -> str | None:
+        """Remove a book from the reader (its highlights stay). Returns the file name to delete."""
+        with self._lock, self.conn:
+            row = self.conn.execute("SELECT file FROM documents WHERE id = ?", (doc_id,)).fetchone()
+            if not row:
+                return None
+            self.conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+        return row["file"]
+
+    def chapter_highlights(self, doc_id: int, chapter: int) -> list[dict]:
+        rows = self.conn.execute(self._HIGHLIGHT_SELECT + " WHERE h.doc_id = ? AND h.chapter = ? ORDER BY h.id",
+                                 (doc_id, chapter)).fetchall()
+        return [self._highlight(r) for r in rows]
 
     def stats(self) -> dict:
         c = self.conn.execute

@@ -9,6 +9,7 @@ Pure Python standard library (`sqlite3` + `http.server`) with a vanilla-JS front
 - **Import** Kindle `My Clippings.txt`, Readwise-style CSV exports, or Markdown/plain text (drag and drop, CLI, or paste). Re-importing is safe: duplicates are skipped, so you can re-import your Kindle file whenever you like.
   - Kindle notes are attached to their highlight, bookmarks are ignored, and when you extended a highlight only the longest version is kept.
 - **Apple Books (Mac)**: one click (or `python3 -m margin import-apple-books`) pulls in your Books highlights and notes. Run it again whenever you like; only new highlights are added.
+- **Reader for EPUB books**: add DRM-free EPUBs and read them in Margin, with a contents panel, adjustable text size and font, light/sepia/dark themes, and it remembers where you were. **Select text to highlight it** (optionally with a note); highlights are marked in the book and go straight into your library and Daily Review, under the same book as any Kindle/Apple Books highlights. Try it with `sample/Meditations (sample).epub`.
 - **Daily review**: a fixed set of highlights each day (default 10). For each one, choose when to see it again: **Soon** (days), **Later** (weeks), **Someday** (months), or **Discard**. Intervals grow each time you answer, favourites come back twice as often, and there's a daily streak. Keyboard: `1` `2` `3`, `f` favourite, `n` note, `d` discard.
 - **Library** of books and articles, each with its own highlights.
 - **Notes, tags and favourites** on any highlight.
@@ -45,6 +46,7 @@ python3 -m margin import sample/notes.md
 | `serve [--host H] [--port P]` | Run the web app (binds to localhost by default) |
 | `import FILE [--format kindle\|readwise_csv\|markdown] [--title T] [--author A]` | Import a file; format is guessed if omitted |
 | `import-apple-books` | Import highlights and notes from Apple Books on this Mac |
+| `import-epub PATH...` | Add EPUB books to the Reader: files, unpacked EPUB folders, or folders to search |
 | `export OUT.csv` / `export OUT.zip` | Export everything as CSV or zipped Markdown |
 | `digest [--dry-run]` | Email today's review (`--dry-run` prints it instead) |
 | `setup-email` | Set up the daily email (password goes in the Keychain) |
@@ -56,6 +58,23 @@ python3 -m margin import sample/notes.md
 Margin reads Books' own databases in `~/Library/Containers/com.apple.iBooksX/Data/Documents/` and copies them first, so Books' data is never modified. Highlights from deleted annotations are skipped, and books are matched by title and author.
 
 If macOS blocks access, open **System Settings → Privacy & Security → Full Disk Access**, turn it on for **Terminal**, then restart Terminal.
+
+### Reader (EPUB books)
+
+Add books from the **Reader** page (button, or drop files anywhere on it), the **Add highlights → EPUB book** tile, or the command line:
+
+```sh
+python3 -m margin import-epub ~/Books                 # every .epub in a folder (searched recursively)
+python3 -m margin import-epub "~/Downloads/Some Book.epub"
+```
+
+Books are copied to `~/.margin/books/`; adding the same file twice does nothing. Removing a book from the shelf keeps its highlights.
+
+- **While reading:** select text → **Highlight** or **Note** (or press `H`). Click a highlight to add a note or tags, or remove it. `←`/`→` change chapter; the list icon opens the contents, **T** opens text and theme settings.
+- **From your library:** highlights made in the reader have an **Open in book** link that jumps back to the exact passage.
+- **DRM:** books bought from stores (Kindle, Apple Books, Kobo, etc.) are usually DRM-protected and can't be opened outside their own app; Margin says so instead of failing silently. Most free and indie EPUBs (e.g. Project Gutenberg, Standard Ebooks) work.
+- **Apple Books:** EPUBs you added to Apple Books yourself are stored as unpacked folders, which `import-epub` understands. They're usually under `~/Library/Mobile Documents/iCloud~com~apple~iBooks/Documents` (iCloud) — Terminal needs Full Disk Access to read there.
+- **Safety:** EPUB pages are web pages and can contain scripts. Margin never shows a book's HTML directly: chapters are reduced on the server to plain text, headings, lists, tables, images and links, then rebuilt in the page with DOM APIs. Book images are served with a sandboxing Content-Security-Policy, so nothing in a book can run code.
 
 ### Run in the background on a Mac
 
@@ -113,4 +132,4 @@ The tests cover the importers (using the files in `sample/`), scheduling, the da
 ## Notes
 
 - There's no login: it's meant to run on your own machine. If you expose it on a network, put it behind something that adds authentication.
-- Layout: `margin/db.py` (SQLite store), `importers.py`, `review.py`, `export.py`, `digest.py`, `server.py` (JSON API + static files), `__main__.py` (CLI), `static/` (frontend).
+- Layout: `margin/db.py` (SQLite store), `importers.py`, `review.py`, `export.py`, `digest.py`, `epub.py` (EPUB parsing and sanitising), `server.py` (JSON API + static files), `__main__.py` (CLI), `static/` (frontend). Tests build their EPUBs with `tests/epub_fixtures.py`; `tests/make_sample_book.py` regenerates the sample book.

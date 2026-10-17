@@ -6,6 +6,7 @@ import json
 import threading
 import unittest
 import unittest.mock
+import sys
 import urllib.error
 import urllib.request
 import zipfile
@@ -18,6 +19,7 @@ from margin.db import Store, fingerprint
 from margin.server import make_handler
 
 SAMPLE = Path(__file__).resolve().parent.parent / "sample"
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # for epub_fixtures
 
 
 class Clock:
@@ -532,6 +534,231 @@ class MacOSTests(unittest.TestCase):
         from margin import macos
         with unittest.mock.patch("sys.platform", "linux"), self.assertRaises(RuntimeError):
             macos.install("/tmp/x.db", 8080, "06:00")
+
+
+
+def walk_nodes(nodes):
+    """Yield every element node in a sanitised chapter tree."""
+    for n in nodes:
+        if isinstance(n, dict):
+            yield n
+            yield from walk_nodes(n["c"])
+
+
+def node_text(nodes) -> str:
+    return "".join(n if isinstance(n, str) else node_text(n["c"]) for n in nodes)
+
+
+class EpubTests(unittest.TestCase):
+    def setUp(self):
+        from epub_fixtures import make_epub
+        from margin import epub
+        self.epub, self.make = epub, make_epub
+
+    def test_metadata_toc_and_cover(self):
+        for version in (3, 2):
+            with self.subTest(version=version), self.epub.Book(self.make(version)) as book:
+                info = book.info()
+                self.assertEqual((info["title"], info["author"]), ("Meditations", "Marcus Aurelius"))
+                self.assertEqual(info["chapters"], 4)  # cover page + 3 chapters, in spine order
+                self.assertEqual(info["cover"], "OEBPS/images/cover.png")
+                self.assertEqual([t["title"] for t in info["toc"] if t["level"] == 0], ["Book One", "Book Two", "Book Three"])
+                self.assertEqual(info["chapter_titles"][1], "Book One")
+        with self.epub.Book(self.make(3)) as book:
+            nested = [t for t in book.toc if t["level"] == 1]
+            self.assertEqual(nested, [{"title": "Of my family", "chapter": 1, "anchor": "one", "level": 1}])
+
+    def test_chapter_is_sanitised(self):
+        with self.epub.Book(self.make()) as book:
+            nodes = book.chapter(1)
+            nodes2 = book.chapter(2)
+            cover = book.chapter(0)
+        elements = list(walk_nodes(nodes)) + list(walk_nodes(nodes2)) + list(walk_nodes(cover))
+        tags = {n["t"] for n in elements}
+        self.assertFalse(tags & {"script", "style", "iframe", "svg", "section", "html", "head"})
+        for n in elements:
+            for key in n["a"]:
+                self.assertIn(key, {"id", "src", "alt", "href", "chapter", "anchor", "colspan", "rowspan"})
+        text = node_text(nodes)
+        self.assertIn("From my grandfather Verus", text)
+        self.assertNotIn("pwned", text)
+        self.assertNotIn("alert", text + node_text(nodes2) + node_text(cover))
+        links = [n["a"] for n in walk_nodes(nodes) if n["t"] == "a"]
+        self.assertEqual(links[0], {"chapter": 2, "anchor": "two"})               # internal → chapter index
+        self.assertEqual(links[1], {"href": "https://en.wikipedia.org/wiki/Meditations"})
+        self.assertEqual(links[2], {})                                           # javascript: dropped
+        img = next(n for n in walk_nodes(nodes) if n["t"] == "img")
+        self.assertEqual(img["a"], {"src": "OEBPS/images/plate.png", "alt": "A plate"})
+        cover_img = next(n for n in walk_nodes(cover) if n["t"] == "img")
+        self.assertEqual(cover_img["a"]["src"], "OEBPS/images/cover.png")
+        td = next(n for n in walk_nodes(nodes2) if n["t"] == "td")
+        self.assertEqual(td["a"], {"colspan": "2"})
+
+    def test_images_only(self):
+        with self.epub.Book(self.make()) as book:
+            data, ctype = book.image("OEBPS/images/plate.png")
+            self.assertEqual(ctype, "image/png")
+            self.assertTrue(data.startswith(b"\x89PNG"))
+            for bad in ("OEBPS/content.opf", "OEBPS/text/chapter1.xhtml", "../../etc/passwd", "nope.png"):
+                with self.assertRaises(KeyError):
+                    book.image(bad)
+
+    def test_drm_and_bad_files(self):
+        with self.assertRaisesRegex(self.epub.EpubError, "DRM"):
+            self.epub.Book(self.make(drm="adobe"))
+        with self.assertRaisesRegex(self.epub.EpubError, "Apple"):
+            self.epub.Book(self.make(drm="apple"))
+        with self.epub.Book(self.make(drm="fonts-only")) as book:  # font obfuscation is not DRM
+            self.assertEqual(book.title, "Meditations")
+        with self.assertRaisesRegex(self.epub.EpubError, "not a valid EPUB"):
+            self.epub.Book(b"this is not a zip")
+
+    def test_unpacked_folder(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "Meditations.epub"
+            with zipfile.ZipFile(io.BytesIO(self.make())) as z:
+                z.extractall(folder)
+            with self.epub.Book(self.epub.read_bytes(folder)) as book:
+                self.assertEqual(book.info()["chapters"], 4)
+
+
+class ReaderApiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import tempfile
+        from epub_fixtures import make_epub
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.books = Path(cls.tmp.name) / "books"
+        cls.store = Store(today=Clock())
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(cls.store, cls.books))
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+        cls.book = make_epub()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        cls.store.close()
+        cls.tmp.cleanup()
+
+    def call(self, method, path, body=None, raw=None):
+        data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
+        req = urllib.request.Request(self.base + path, method=method, data=data,
+                                     headers={"Content-Type": "application/epub+zip" if raw is not None else "application/json"})
+        try:
+            with urllib.request.urlopen(req) as res:
+                return res.status, res.read(), res.headers
+        except urllib.error.HTTPError as e:
+            return e.code, e.read(), e.headers
+
+    def upload(self):
+        status, body, _ = self.call("POST", "/api/docs?filename=meditations.epub", raw=self.book)
+        self.assertEqual(status, 200)
+        return json.loads(body)
+
+    def test_reading_flow(self):
+        first = self.upload()
+        doc = first["document"]
+        self.assertEqual(doc["title"], "Meditations")
+        self.assertFalse(self.upload()["created"])  # same file again → same book
+        self.assertEqual(len(list(self.books.glob("*.epub"))), 1)
+
+        status, body, _ = self.call("GET", f"/api/docs/{doc['id']}/chapter/1")
+        chapter = json.loads(body)
+        self.assertEqual(chapter["title"], "Book One")
+        self.assertIn("grandfather", node_text(chapter["nodes"]))
+        self.assertEqual(chapter["highlights"], [])
+
+        # Highlight from the reader: filed under the book, with chapter and location.
+        status, body, _ = self.call("POST", "/api/highlights", {"text": "Begin the morning by saying to thyself",
+                                                                 "doc_id": doc["id"], "chapter": 1, "note": "daily"})
+        self.assertEqual(status, 200)
+        h = json.loads(body)["highlight"]
+        self.assertEqual((h["title"], h["author"], h["doc_id"], h["chapter"]), ("Meditations", "Marcus Aurelius", doc["id"], 1))
+        self.assertEqual(h["location"], "Ch. 2 · Book One")
+        status, body, _ = self.call("GET", f"/api/docs/{doc['id']}/chapter/1")
+        self.assertEqual([x["id"] for x in json.loads(body)["highlights"]], [h["id"]])
+        self.assertEqual(self.call("POST", "/api/highlights", {"text": "x", "doc_id": doc["id"], "chapter": 99})[0], 400)
+
+        # Progress is saved and reflected in the shelf.
+        self.assertEqual(self.call("PUT", f"/api/docs/{doc['id']}/progress", {"chapter": 2, "position": 0.5})[0], 200)
+        [shelf] = json.loads(self.call("GET", "/api/docs")[1])
+        self.assertEqual((shelf["progress_chapter"], shelf["progress_pos"]), (2, 0.5))
+        self.assertAlmostEqual(shelf["progress"], 2.5 / 4)
+        info = json.loads(self.call("GET", f"/api/docs/{doc['id']}")[1])
+        self.assertEqual((info["highlight_count"], info["source_id"]), (1, h["source_id"]))
+
+        # Images: only real images, never as runnable pages.
+        status, body, headers = self.call("GET", f"/api/docs/{doc['id']}/image")
+        self.assertEqual((status, headers["Content-Type"]), (200, "image/png"))
+        self.assertIn("sandbox", headers["Content-Security-Policy"])
+        status, _, headers = self.call("GET", f"/api/docs/{doc['id']}/image?path=OEBPS/images/evil.svg")
+        self.assertIn("sandbox", headers["Content-Security-Policy"])
+        self.assertEqual(self.call("GET", f"/api/docs/{doc['id']}/image?path=OEBPS/content.opf")[0], 404)
+
+        # Removing the book keeps its highlights.
+        self.assertEqual(self.call("DELETE", f"/api/docs/{doc['id']}")[0], 200)
+        self.assertEqual(list(self.books.glob("*.epub")), [])
+        self.assertEqual(self.store.get_highlight(h["id"])["doc_id"], None)
+        self.assertEqual(self.call("GET", f"/api/docs/{doc['id']}/chapter/1")[0], 404)
+
+    def test_rejects_bad_uploads(self):
+        status, body, _ = self.call("POST", "/api/docs?filename=notes.txt", raw=b"hello")
+        self.assertEqual(status, 400)
+        self.assertIn("notes.txt", json.loads(body)["error"])
+        from epub_fixtures import make_epub
+        status, body, _ = self.call("POST", "/api/docs", raw=make_epub(drm="adobe"))
+        self.assertIn("DRM", json.loads(body)["error"])
+
+
+class ImportEpubCliTests(unittest.TestCase):
+    def test_files_and_folders(self):
+        import contextlib
+        import tempfile
+        from epub_fixtures import make_epub
+        from margin.__main__ import main
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "in" / "nested").mkdir(parents=True)
+            (tmp / "in" / "a.epub").write_bytes(make_epub(title="Book A"))
+            (tmp / "in" / "nested" / "b.epub").write_bytes(make_epub(version=2, title="Book B"))
+            (tmp / "in" / "drm.epub").write_bytes(make_epub(drm="adobe", title="Locked"))
+            with zipfile.ZipFile(io.BytesIO(make_epub(title="Book C"))) as z:
+                z.extractall(tmp / "in" / "c.epub")   # Apple Books style unpacked folder
+            db = tmp / "data" / "m.db"
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), self.assertLogs(level="ERROR"):
+                self.assertEqual(main(["--db", str(db), "import-epub", str(tmp / "in")]), 0)
+            self.assertIn("3 added, 0 already in your reader, 1 couldn't be read", out.getvalue())
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), self.assertLogs(level="ERROR"):
+                main(["--db", str(db), "import-epub", str(tmp / "in")])
+            self.assertIn("0 added, 3 already in your reader", out.getvalue())
+            self.assertEqual(len(list((tmp / "data" / "books").glob("*.epub"))), 3)
+
+
+class MigrationTests(unittest.TestCase):
+    def test_old_database_gets_new_columns(self):
+        import sqlite3
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "old.db")
+            conn = sqlite3.connect(path)
+            conn.executescript("""CREATE TABLE sources (id INTEGER PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL DEFAULT '',
+                url TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, UNIQUE (title, author));
+                CREATE TABLE highlights (id INTEGER PRIMARY KEY, source_id INTEGER NOT NULL, text TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '', location TEXT NOT NULL DEFAULT '', highlighted_at TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL, fingerprint TEXT NOT NULL UNIQUE, favorite INTEGER NOT NULL DEFAULT 0,
+                discarded INTEGER NOT NULL DEFAULT 0, interval_days REAL NOT NULL DEFAULT 0, due TEXT NOT NULL,
+                review_count INTEGER NOT NULL DEFAULT 0, last_reviewed TEXT);""")
+            conn.close()
+            store = Store(path, today=Clock())
+            store.add_highlights([item("Old highlight")])
+            [h] = store.search()
+            self.assertIsNone(h["doc_id"])
+            store.close()
 
 
 if __name__ == "__main__":
