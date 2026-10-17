@@ -19,6 +19,10 @@ Pure Python standard library (`sqlite3` + `http.server`) with a vanilla-JS front
 
 ## Run it
 
+**On a Mac, the easy way:** in Finder, open the `margin` folder and double-click **Start Margin.command**. It starts Margin and opens it in your browser; keep its Terminal window open while you use Margin. (First time only: if macOS says it can't verify the developer, right-click the file → **Open** → **Open**.) For Margin to be available without this, use `install-mac` below.
+
+From Terminal:
+
 ```sh
 cd margin
 python3 -m margin serve            # http://127.0.0.1:8080
