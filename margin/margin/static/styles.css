@@ -24,8 +24,9 @@
   color-scheme: light;
 }
 
+/* Follow the Mac's appearance unless a page pins a theme with <html data-theme="light|dark"> (the reader does). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #111317;
     --surface: #181b21;
     --surface-2: #20242b;
@@ -44,6 +45,25 @@
     --shadow-lg: 0 10px 30px rgba(0, 0, 0, .35);
     color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #111317;
+  --surface: #181b21;
+  --surface-2: #20242b;
+  --text: #eceef2;
+  --text-2: #b8bdc7;
+  --muted: #8a91a0;
+  --border: #2a2f38;
+  --border-strong: #3a404b;
+  --accent: #5b8ef5;
+  --accent-hover: #7aa4f8;
+  --accent-soft: #1d2a45;
+  --accent-ink: #0b1220;
+  --note-bg: #2a2412;
+  --note-border: #5c4c1c;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .3);
+  --shadow-lg: 0 10px 30px rgba(0, 0, 0, .35);
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -416,11 +436,20 @@ mark.hl-mark.flash { animation: flash 1.6s ease 2; }
 .setting { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); font-size: .88rem; font-weight: 550; }
 .setting:first-child { border-top: none; }
 .size-label { min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; color: var(--muted); font-size: .85rem; }
-.theme-swatch { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--border-strong); cursor: pointer; }
+.setting.stacked { display: grid; gap: 8px; justify-content: stretch; }
+.themes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.theme-option {
+  font: inherit; font-size: .75rem; font-weight: 550; cursor: pointer; color: var(--text-2);
+  display: grid; justify-items: center; gap: 4px; padding: 6px 2px; border-radius: 8px;
+  border: 1px solid transparent; background: none;
+}
+.theme-option:hover { background: var(--surface-2); }
+.theme-option[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.theme-swatch { width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--border-strong); }
 .theme-swatch.light { background: #fff; }
 .theme-swatch.sepia { background: #f6efe1; }
 .theme-swatch.dark { background: #16171b; }
-.theme-swatch[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.theme-swatch.auto { background: linear-gradient(135deg, #fff 50%, #16171b 50%); }
 .tab.font-serif { font-family: var(--serif); }
 
 @media (max-width: 760px) {

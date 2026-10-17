@@ -46,6 +46,8 @@ const ICONS = {
   toc: ['M8 6h13', 'M8 12h13', 'M8 18h13', 'M3 6h.01', 'M3 12h.01', 'M3 18h.01'],
   type: ['M4 7V4h16v3', 'M9 20h6', 'M12 4v16'],
   next: ['M9 18l6-6-6-6'],
+  sun: ['M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10z', 'M12 1v2', 'M12 21v2', 'M4.22 4.22l1.42 1.42', 'M18.36 18.36l1.42 1.42', 'M1 12h2', 'M21 12h2', 'M4.22 19.78l1.42-1.42', 'M18.36 5.64l1.42-1.42'],
+  moon: ['M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z'],
   highlighter: ['M9 11l-6 6v3h9l3-3', 'M22 12l-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4'],
   flame: ['M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5z'],
 };
@@ -697,7 +699,8 @@ async function renderShelf(message) {
 
 // ---------- Reader: reading view ----------
 
-const READER_DEFAULTS = { size: 20, theme: 'light', font: 'serif' };
+const READER_DEFAULTS = { size: 20, theme: 'auto', font: 'serif' };  // auto = follow the Mac's light/dark setting
+const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
 
 function readerPrefs() {
   try { return { ...READER_DEFAULTS, ...JSON.parse(localStorage.getItem('margin-reader') || '{}') }; } catch { return { ...READER_DEFAULTS }; }
@@ -810,8 +813,15 @@ async function renderRead(docId, chapterPart, params) {
   const highlights = new Map(data.highlights.map((h) => [h.id, h]));
 
   document.body.classList.add('reading');
+  const effectiveTheme = () => (prefs.theme === 'auto' ? (systemDark.matches ? 'dark' : 'light') : prefs.theme);
   const applyPrefs = () => {
-    document.body.dataset.readerTheme = prefs.theme;
+    const theme = effectiveTheme();
+    document.body.dataset.readerTheme = theme;
+    // Pin the whole page (menus, panels, dialogs) to the reader's light/dark, not just the text.
+    document.documentElement.dataset.theme = theme === 'dark' ? 'dark' : 'light';
+    fill(modeButton, icon(theme === 'dark' ? 'sun' : 'moon'));
+    modeButton.title = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+    modeButton.setAttribute('aria-label', modeButton.title);
     text.style.setProperty('--reader-size', `${prefs.size}px`);
     text.dataset.font = prefs.font;
     saveReaderPrefs(prefs);
@@ -927,16 +937,22 @@ async function renderRead(docId, chapterPart, params) {
     el('nav', {}, tocList));
 
   const sizeLabel = el('span', { class: 'size-label' });
-  const themeButtons = ['light', 'sepia', 'dark'].map((t) => el('button', {
-    type: 'button', class: `theme-swatch ${t}`, 'aria-label': `${t} theme`, title: t[0].toUpperCase() + t.slice(1),
+  const themeButtons = [['auto', 'Auto'], ['light', 'Light'], ['sepia', 'Sepia'], ['dark', 'Dark']].map(([t, label]) => el('button', {
+    type: 'button', class: 'theme-option', 'data-theme-option': t, title: t === 'auto' ? 'Match your Mac’s light/dark setting' : `${label} theme`,
     onclick: () => { prefs.theme = t; applyPrefs(); syncSettings(); },
-  }));
+  }, el('span', { class: `theme-swatch ${t}`, 'aria-hidden': 'true' }), label));
+  // One tap from the top bar: flip between light and dark.
+  const modeButton = el('button', {
+    class: 'btn ghost icon-only', type: 'button',
+    onclick: () => { prefs.theme = effectiveTheme() === 'dark' ? 'light' : 'dark'; applyPrefs(); syncSettings(); },
+  });
+  systemDark.addEventListener('change', () => { if (prefs.theme === 'auto') applyPrefs(); }, { signal });
   const fontButtons = [['serif', 'Serif'], ['sans', 'Sans']].map(([f, label]) => el('button', {
     type: 'button', class: `tab font-${f}`, onclick: () => { prefs.font = f; applyPrefs(); syncSettings(); },
   }, label));
   const syncSettings = () => {
     sizeLabel.textContent = `${prefs.size}px`;
-    themeButtons.forEach((b) => b.setAttribute('aria-pressed', String(b.classList.contains(prefs.theme))));
+    themeButtons.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.themeOption === prefs.theme)));
     fontButtons.forEach((b) => b.setAttribute('aria-pressed', String(b.classList.contains(`font-${prefs.font}`))));
   };
   const resize = (delta) => { prefs.size = Math.min(30, Math.max(14, prefs.size + delta)); applyPrefs(); syncSettings(); };
@@ -945,7 +961,7 @@ async function renderRead(docId, chapterPart, params) {
       el('div', { class: 'row' }, el('button', { class: 'btn', type: 'button', onclick: () => resize(-1), 'aria-label': 'Smaller text' }, 'A−'), sizeLabel,
         el('button', { class: 'btn', type: 'button', onclick: () => resize(1), 'aria-label': 'Larger text' }, 'A+'))),
     el('div', { class: 'setting' }, el('span', {}, 'Font'), el('div', { class: 'row' }, fontButtons)),
-    el('div', { class: 'setting' }, el('span', {}, 'Theme'), el('div', { class: 'row' }, themeButtons)));
+    el('div', { class: 'setting stacked' }, el('span', {}, 'Theme'), el('div', { class: 'themes' }, themeButtons)));
   syncSettings();
 
   const toggle = (panel, other) => { other.hidden = true; panel.hidden = !panel.hidden; };
@@ -973,6 +989,7 @@ async function renderRead(docId, chapterPart, params) {
       el('div', { class: 'row' },
         doc.source_id ? el('a', { class: 'btn ghost', href: `#/source/${doc.source_id}`, title: 'Highlights from this book' }, icon('highlighter'), el('span', { class: 'hide-sm' }, 'Highlights')) : null,
         el('button', { class: 'btn ghost icon-only', type: 'button', title: 'Contents', 'aria-label': 'Contents', onclick: () => toggle(tocPanel, settingsPanel) }, icon('toc')),
+        modeButton,
         el('button', { class: 'btn ghost icon-only', type: 'button', title: 'Text & theme', 'aria-label': 'Text and theme', onclick: () => toggle(settingsPanel, tocPanel) }, icon('type'))),
       el('div', { class: 'reader-progress' }, bar)),
     tocPanel, settingsPanel,
@@ -1020,6 +1037,7 @@ async function route() {
   pageAbort.abort();
   pageAbort = new AbortController();
   delete document.body.dataset.readerTheme;
+  delete document.documentElement.dataset.theme;  // back to following the Mac's appearance
   document.body.classList.remove('reading');
   const [path, query = ''] = location.hash.replace(/^#/, '').split('?');
   const parts = path.split('/').filter(Boolean);
