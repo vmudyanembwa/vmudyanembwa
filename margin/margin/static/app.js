@@ -649,7 +649,9 @@ async function renderShelf(message) {
 
   // Drop books anywhere on the page.
   for (const evName of ['dragenter', 'dragover']) view.addEventListener(evName, (ev) => { ev.preventDefault(); view.classList.add('dropping'); }, { signal: pageAbort.signal });
-  view.addEventListener('dragleave', (ev) => { if (ev.target === view) view.classList.remove('dropping'); }, { signal: pageAbort.signal });
+  // Clear the outline when the drag leaves the window or is cancelled, not just when it leaves #view itself.
+  view.addEventListener('dragleave', (ev) => { if (!ev.relatedTarget || !view.contains(ev.relatedTarget)) view.classList.remove('dropping'); }, { signal: pageAbort.signal });
+  window.addEventListener('dragend', () => view.classList.remove('dropping'), { signal: pageAbort.signal });
   view.addEventListener('drop', async (ev) => {
     ev.preventDefault();
     view.classList.remove('dropping');
@@ -1175,6 +1177,7 @@ async function route() {
   delete document.body.dataset.readerTheme;
   delete document.documentElement.dataset.theme;  // back to following the Mac's appearance
   document.body.classList.remove('reading', 'paged');
+  view.classList.remove('dropping');  // the shelf's drag-and-drop outline must never outlive the shelf
   const [path, query = ''] = location.hash.replace(/^#/, '').split('?');
   const parts = path.split('/').filter(Boolean);
   currentPage = ['library', 'source', 'search', 'import', 'reader', 'read'].includes(parts[0]) ? parts[0] : 'review';
