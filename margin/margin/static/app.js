@@ -47,6 +47,7 @@ const ICONS = {
   type: ['M4 7V4h16v3', 'M9 20h6', 'M12 4v16'],
   next: ['M9 18l6-6-6-6'],
   sun: ['M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10z', 'M12 1v2', 'M12 21v2', 'M4.22 4.22l1.42 1.42', 'M18.36 18.36l1.42 1.42', 'M1 12h2', 'M21 12h2', 'M4.22 19.78l1.42-1.42', 'M18.36 5.64l1.42-1.42'],
+  bookmark: ['M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z'],
   moon: ['M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z'],
   highlighter: ['M9 11l-6 6v3h9l3-3', 'M22 12l-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4'],
   flame: ['M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5z'],
@@ -811,7 +812,8 @@ async function renderRead(docId, chapterPart, params) {
   const doc = await api(`docs/${docId}`);
   const resuming = chapterPart == null;
   const chapter = Math.min(Math.max(0, resuming ? doc.progress_chapter : Number(chapterPart) || 0), doc.chapters - 1);
-  const data = await api(`docs/${docId}/chapter/${chapter}`);
+  const [data, bookmarkList] = await Promise.all([api(`docs/${docId}/chapter/${chapter}`), api(`docs/${docId}/bookmarks`)]);
+  let bookmarks = bookmarkList;
   const signal = pageAbort.signal;
   const prefs = readerPrefs();
   const highlights = new Map(data.highlights.map((h) => [h.id, h]));
@@ -863,8 +865,11 @@ async function renderRead(docId, chapterPart, params) {
 
   // --- page layout: CSS columns flow the chapter into page-sized columns inside a clipped "stage";
   // turning a page slides the column strip sideways by one page width.
+  const ribbon = el('div', { class: 'page-ribbon', hidden: true, title: 'Bookmarked', 'aria-hidden': 'true' }, icon('bookmark', { filled: true }));
   const stage = el('div', { class: 'page-stage' }, text);
+  const pageWrap = el('div', { class: 'page-wrap' }, ribbon, stage);  // ribbon hangs in the margin above the page
   const pageLabel = el('span', { class: 'page-label' });
+  const leftLabel = el('span', { class: 'pages-left' });
   let page = 0;
   let pages = 1;
   let step = 1;
@@ -894,12 +899,79 @@ async function renderRead(docId, chapterPart, params) {
     page = Math.min(Math.max(0, n), pages - 1);
     text.style.transition = animate ? '' : 'none';
     text.style.transform = `translateX(${-page * step}px)`;
-    pageLabel.textContent = pages > 1 ? `Page ${page + 1} of ${pages}` : 'Page 1 of 1';
+    pageLabel.textContent = `Page ${page + 1} of ${pages}`;
+    leftLabel.textContent = pagesLeftText();
+    updateBookmarkUI();
     prevPageButton.disabled = page === 0 && chapter === 0;
     nextPageButton.disabled = page === pages - 1 && chapter === doc.chapters - 1;
     hideToolbar();
     showProgress();
     saveSoon();
+  }
+
+  // How much text fits on a page here (measured), used to estimate pages left in the whole book.
+  function charsPerPage() {
+    const measured = (doc.chapter_chars?.[chapter] || text.textContent.length) / pages;
+    if (pages >= 2 && measured > 200) return measured;
+    // Short chapters (title pages) can't be measured; estimate from the page size and font.
+    const size = prefs.size;
+    const perLine = (parseFloat(text.style.columnWidth) || stage.clientWidth) / (size * 0.48);
+    const lines = stage.clientHeight / (size * 1.7);
+    return perLine * lines * (text.classList.contains('spread') ? 2 : 1);
+  }
+  function pagesLeftText() {
+    const inChapter = pages - 1 - page;
+    const chapterPart = inChapter === 0 ? 'Last page in chapter' : `${inChapter} ${inChapter === 1 ? 'page' : 'pages'} left in chapter`;
+    if (!doc.chapter_chars) return chapterPart;
+    const laterChars = doc.chapter_chars.slice(chapter + 1).reduce((a, b) => a + b, 0);
+    const inBook = inChapter + Math.round(laterChars / charsPerPage());
+    return inBook <= inChapter ? `${chapterPart} · end of book` : `${chapterPart} · about ${inBook.toLocaleString()} left in book`;
+  }
+
+  // --- bookmarks: one per page (or per screenful when scrolling)
+  const bookmarkButton = el('button', { class: 'btn ghost icon-only', type: 'button', onclick: () => toggleBookmark() });
+  function bookmarkHere() {
+    return bookmarks.find((b) => {
+      if (b.chapter !== chapter) return false;
+      if (paged) return Math.round(b.position * (pages - 1)) === page;
+      const window_ = Math.max(0.02, (window.innerHeight * 0.5) / Math.max(1, text.offsetHeight));
+      return Math.abs(b.position - scrollPosition()) <= window_;
+    });
+  }
+  function updateBookmarkUI() {
+    const here = bookmarkHere();
+    fill(bookmarkButton, icon('bookmark', { filled: Boolean(here) }));
+    bookmarkButton.title = here ? 'Remove bookmark (B)' : 'Bookmark this page (B)';
+    bookmarkButton.setAttribute('aria-label', here ? 'Remove bookmark' : 'Bookmark this page');
+    bookmarkButton.setAttribute('aria-pressed', String(Boolean(here)));
+    ribbon.hidden = !here;
+  }
+  // The first words you can see, so a bookmark reads like "I took the long way back…".
+  function visibleSnippet() {
+    const area = paged ? stage.getBoundingClientRect() : { left: 0, right: window.innerWidth, top: 120, bottom: window.innerHeight };
+    for (const block of text.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, blockquote, figcaption, dt, dd, td, pre')) {
+      const r = block.getBoundingClientRect();
+      const visible = paged ? r.right > area.left + 4 && r.left < area.right - 4 : r.bottom > area.top && r.top < area.bottom;
+      const words = block.textContent.replace(/\s+/g, ' ').trim();
+      if (visible && words) return words.length > 90 ? `${words.slice(0, 90).replace(/\s+\S*$/, '')}…` : words;
+    }
+    return '';
+  }
+  async function toggleBookmark() {
+    const here = bookmarkHere();
+    try {
+      if (here) {
+        await api(`bookmarks/${here.id}`, { method: 'DELETE' });
+        bookmarks = bookmarks.filter((b) => b.id !== here.id);
+        toast('Bookmark removed');
+      } else {
+        const b = await api(`docs/${doc.id}/bookmarks`, { method: 'POST', body: { chapter, position: position(), label: visibleSnippet() } });
+        bookmarks = [...bookmarks, b].sort((a, c) => a.chapter - c.chapter || a.position - c.position);
+        toast('Page bookmarked');
+      }
+      updateBookmarkUI();
+      if (!tocPanel.hidden) showPanelTab(currentTab);
+    } catch (e) { toast(e.message); }
   }
 
   function relayout() {
@@ -956,7 +1028,7 @@ async function renderRead(docId, chapterPart, params) {
     // Images change the page count once they load.
     text.addEventListener('load', () => { if (laidOut) relayout(); }, { signal, capture: true });
   } else {
-    window.addEventListener('scroll', () => { showProgress(); hideToolbar(); saveSoon(); }, { signal, passive: true });
+    window.addEventListener('scroll', () => { showProgress(); hideToolbar(); saveSoon(); updateBookmarkUI(); }, { signal, passive: true });
   }
 
   // --- selection toolbar (create highlight) and mark toolbar (note / remove)
@@ -1039,9 +1111,69 @@ async function renderRead(docId, chapterPart, params) {
       class: `toc-item level-${Math.min(t.level, 3)}${t.chapter === chapter ? ' current' : ''}`,
     }, t.title))
     : doc.chapter_titles.map((t, i) => el('a', { href: `#/read/${doc.id}/${i}`, class: `toc-item${i === chapter ? ' current' : ''}` }, t || `Section ${i + 1}`));
-  const tocPanel = el('aside', { class: 'reader-panel toc-panel', hidden: true, 'aria-label': 'Contents' },
-    el('div', { class: 'panel-head' }, el('strong', {}, 'Contents'), el('button', { class: 'btn ghost icon-only', type: 'button', 'aria-label': 'Close', onclick: () => { tocPanel.hidden = true; } }, icon('discard'))),
-    el('nav', {}, tocList));
+  // Contents / Bookmarks / Highlights in one panel, like Apple Books.
+  const panelBody = el('div', { class: 'panel-body' });
+  const panelTabs = [['contents', 'Contents'], ['bookmarks', 'Bookmarks'], ['highlights', 'Highlights']].map(([key, label]) => el('button', {
+    type: 'button', class: 'panel-tab', 'data-tab': key, role: 'tab', onclick: () => showPanelTab(key),
+  }, label));
+  let currentTab = 'contents';
+  const jumpTo = (targetChapter, targetPosition) => {
+    tocPanel.hidden = true;
+    if (targetChapter === chapter) {
+      if (paged) showPage(Math.round(targetPosition * (pages - 1)));
+      else {
+        const top = text.getBoundingClientRect().top + window.scrollY;
+        const room = text.offsetHeight - window.innerHeight * 0.6;
+        window.scrollTo({ top: Math.max(0, top - window.innerHeight * 0.3 + targetPosition * room), behavior: 'smooth' });
+      }
+      return;
+    }
+    pendingPosition = targetPosition;
+    go(targetChapter);
+  };
+  const chapterLabel = (i) => `Ch. ${i + 1}${doc.chapter_titles[i] ? ` · ${doc.chapter_titles[i]}` : ''}`;
+  async function showPanelTab(key) {
+    currentTab = key;
+    panelTabs.forEach((t) => t.setAttribute('aria-selected', String(t.dataset.tab === key)));
+    if (key === 'contents') { fill(panelBody, el('nav', {}, tocList)); return; }
+    if (key === 'bookmarks') {
+      fill(panelBody, bookmarks.length
+        ? bookmarks.map((b) => el('div', { class: `panel-item${b.chapter === chapter ? ' current' : ''}` },
+          el('button', { type: 'button', class: 'panel-jump', onclick: () => jumpTo(b.chapter, b.position) },
+            el('span', { class: 'panel-quote' }, b.label || 'Bookmark'), el('small', {}, chapterLabel(b.chapter))),
+          el('button', {
+            type: 'button', class: 'btn ghost icon-only', 'aria-label': 'Delete bookmark', title: 'Delete bookmark',
+            onclick: async () => {
+              try {
+                await api(`bookmarks/${b.id}`, { method: 'DELETE' });
+                bookmarks = bookmarks.filter((x) => x.id !== b.id);
+                updateBookmarkUI();
+                showPanelTab('bookmarks');
+              } catch (e) { toast(e.message); }
+            },
+          }, icon('trash'))))
+        : el('p', { class: 'panel-empty' }, 'No bookmarks yet. Tap the bookmark icon (or press B) to mark a page.'));
+      return;
+    }
+    fill(panelBody, el('p', { class: 'panel-empty' }, 'Loading…'));
+    try {
+      const list = await api(`docs/${doc.id}/highlights`);
+      if (currentTab !== 'highlights') return;
+      fill(panelBody, list.length
+        ? list.map((h) => el('a', { class: `panel-item panel-jump${h.chapter === chapter ? ' current' : ''}`, href: `#/read/${doc.id}/${h.chapter}?hl=${h.id}`, onclick: () => { tocPanel.hidden = true; } },
+          el('span', { class: 'panel-quote serif' }, h.text.length > 160 ? `${h.text.slice(0, 160)}…` : h.text),
+          h.note ? el('span', { class: 'panel-note' }, h.note) : null,
+          el('small', {}, chapterLabel(h.chapter))))
+        : el('p', { class: 'panel-empty' }, 'No highlights in this book yet. Select text and choose Highlight.'));
+    } catch (e) { fill(panelBody, el('p', { class: 'panel-empty' }, e.message)); }
+  }
+  const tocPanel = el('aside', { class: 'reader-panel toc-panel', hidden: true, 'aria-label': 'Contents, bookmarks and highlights' },
+    el('div', { class: 'panel-head' },
+      el('div', { class: 'panel-tabs', role: 'tablist' }, panelTabs),
+      el('button', { class: 'btn ghost icon-only', type: 'button', 'aria-label': 'Close', onclick: () => { tocPanel.hidden = true; } }, icon('discard'))),
+    panelBody);
+  showPanelTab('contents');
+  const openPanel = (key) => { settingsPanel.hidden = true; if (tocPanel.hidden || currentTab !== key) { tocPanel.hidden = false; showPanelTab(key); } else tocPanel.hidden = true; };
 
   const sizeLabel = el('span', { class: 'size-label' });
   const themeButtons = [['auto', 'Auto'], ['light', 'Light'], ['sepia', 'Sepia'], ['dark', 'Dark']].map(([t, label]) => el('button', {
@@ -1096,6 +1228,7 @@ async function renderRead(docId, chapterPart, params) {
     else if (ev.key === 'ArrowLeft' && chapter > 0) go(chapter - 1);
     else if (ev.key === 'Escape') { tocPanel.hidden = true; settingsPanel.hidden = true; hideToolbar(); }
     else if (ev.key === 'h' && !window.getSelection().isCollapsed) createHighlight(false);
+    else if (ev.key === 'b') toggleBookmark();
   }, { signal });
 
   const chapterName = (i) => doc.chapter_titles[i] || `Section ${i + 1}`;
@@ -1107,16 +1240,17 @@ async function renderRead(docId, chapterPart, params) {
       el('a', { class: 'btn ghost', href: '#/reader', 'aria-label': 'Back to shelf' }, icon('back'), el('span', { class: 'hide-sm' }, 'Shelf')),
       el('div', { class: 'reader-title' }, el('strong', {}, doc.title), el('span', {}, `${chapterName(chapter)} · ${chapter + 1} of ${doc.chapters}`)),
       el('div', { class: 'row' },
-        doc.source_id ? el('a', { class: 'btn ghost', href: `#/source/${doc.source_id}`, title: 'Highlights from this book' }, icon('highlighter'), el('span', { class: 'hide-sm' }, 'Highlights')) : null,
-        el('button', { class: 'btn ghost icon-only', type: 'button', title: 'Contents', 'aria-label': 'Contents', onclick: () => toggle(tocPanel, settingsPanel) }, icon('toc')),
+        el('button', { class: 'btn ghost icon-only', type: 'button', title: 'Highlights in this book', 'aria-label': 'Highlights in this book', onclick: () => openPanel('highlights') }, icon('highlighter')),
+        el('button', { class: 'btn ghost icon-only', type: 'button', title: 'Contents, bookmarks & highlights', 'aria-label': 'Contents', onclick: () => openPanel('contents') }, icon('toc')),
+        bookmarkButton,
         modeButton,
         el('button', { class: 'btn ghost icon-only', type: 'button', title: 'Text & theme', 'aria-label': 'Text and theme', onclick: () => toggle(settingsPanel, tocPanel) }, icon('type'))),
       el('div', { class: 'reader-progress' }, bar)),
     tocPanel, settingsPanel,
-    paged ? stage : text,
+    paged ? pageWrap : text,
     missing.length ? el('p', { class: 'reader-note small muted' }, `${plural(missing.length, 'highlight')} from this chapter couldn’t be placed in the text (the book may have changed). They’re still in your library.`) : null,
     paged
-      ? el('nav', { class: 'pager', 'aria-label': 'Pages' }, prevPageButton, el('div', { class: 'pager-mid' }, pageLabel, el('span', {}, chapterName(chapter))), nextPageButton)
+      ? el('nav', { class: 'pager', 'aria-label': 'Pages' }, prevPageButton, el('div', { class: 'pager-mid' }, pageLabel, leftLabel), nextPageButton)
       : el('nav', { class: 'chapter-nav', 'aria-label': 'Chapters' }, navButton(chapter - 1, 'prev'), navButton(chapter + 1, 'next')),
     toolbar,
   );
@@ -1125,7 +1259,10 @@ async function renderRead(docId, chapterPart, params) {
   // --- where to start: a linked highlight, an anchor, a carried/saved position, the end, or the top
   const startTarget = () => (params.get('hl') ? text.querySelector(`mark[data-id="${CSS.escape(params.get('hl'))}"]`)
     : params.get('a') ? document.getElementById(`ch-${params.get('a')}`) : null);
-  const savedPosition = carried ?? (resuming ? doc.progress_pos : null);
+  // Reopening the chapter you were reading (e.g. a page reload) returns to your page; links to a
+  // specific spot (anchor, highlight, or "previous chapter, last page") take precedence.
+  const linked = params.has('a') || params.has('hl') || params.has('at');
+  const savedPosition = carried ?? (resuming || (chapter === doc.progress_chapter && !linked) ? doc.progress_pos : null);
   const flash = (target) => {
     if (target.matches('mark')) for (const m of text.querySelectorAll(`mark[data-id="${target.dataset.id}"]`)) m.classList.add('flash');
   };
@@ -1152,6 +1289,7 @@ async function renderRead(docId, chapterPart, params) {
       window.scrollTo(0, 0);
     }
     showProgress();
+    updateBookmarkUI();
   };
   if (paged) window.scrollTo(0, 0);
   requestAnimationFrame(placeStart);

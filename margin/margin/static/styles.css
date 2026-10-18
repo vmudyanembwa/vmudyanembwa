@@ -488,3 +488,32 @@ body.reading.paged main { max-width: 1180px; }
 .page-turn { color: var(--r-muted); }
 .page-turn:disabled { opacity: .3; }
 body.reading.paged .toc-panel, body.reading.paged .settings-panel { right: max(16px, calc((100vw - 1180px) / 2)); }
+
+/* ---------- Reader: bookmarks, panel tabs, pages left ---------- */
+.page-wrap { position: relative; margin-top: 30px; }
+.page-wrap .page-stage { margin-top: 0; }
+.page-ribbon { position: absolute; top: -32px; right: 0; z-index: 2; color: #e5484d; filter: drop-shadow(0 1px 2px rgba(0,0,0,.25)); pointer-events: none; }
+.page-ribbon[hidden] { display: none; }
+.page-ribbon svg.icon { width: 20px; height: 26px; stroke-width: 1.2; }
+.reader-bar .btn[aria-pressed="true"] .icon { color: #e5484d; fill: #e5484d; }
+.pager-mid .pages-left { display: block; font-size: .75rem; color: var(--r-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.toc-panel { display: flex; flex-direction: column; }
+.panel-head { gap: 8px; }
+.panel-tabs { display: flex; gap: 2px; background: var(--surface-2); padding: 3px; border-radius: 9px; flex: 1; }
+.panel-tab { flex: 1; font: inherit; font-size: .8rem; font-weight: 600; color: var(--muted); background: none; border: none; border-radius: 7px; padding: 6px 4px; cursor: pointer; }
+.panel-tab[aria-selected="true"] { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.panel-body { padding: 4px 8px 10px; overflow-y: auto; }
+.panel-body nav { display: grid; }
+.panel-item { display: flex; align-items: flex-start; gap: 4px; border-radius: 8px; text-decoration: none; color: var(--text); }
+.panel-item:hover { background: var(--surface-2); }
+.panel-item.current { box-shadow: inset 3px 0 0 var(--accent); }
+.panel-jump { flex: 1; min-width: 0; display: grid; gap: 3px; text-align: left; font: inherit; color: inherit; background: none; border: none; cursor: pointer; padding: 9px 10px; }
+a.panel-item.panel-jump { display: grid; }
+.panel-quote { font-size: .88rem; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.panel-quote.serif { font-family: var(--serif); font-size: .95rem; }
+.panel-note { font-size: .8rem; color: var(--text-2); background: var(--note-bg); border-radius: 5px; padding: 3px 7px; }
+.panel-jump small { font-size: .75rem; color: var(--muted); }
+.panel-item .btn { margin-top: 6px; opacity: .5; }
+.panel-item:hover .btn { opacity: 1; }
+.panel-empty { color: var(--muted); font-size: .88rem; padding: 12px 10px; margin: 0; }

@@ -704,6 +704,40 @@ class ReaderApiTests(unittest.TestCase):
         self.assertEqual(self.store.get_highlight(h["id"])["doc_id"], None)
         self.assertEqual(self.call("GET", f"/api/docs/{doc['id']}/chapter/1")[0], 404)
 
+    def test_bookmarks_highlights_and_lengths(self):
+        doc = self.upload()["document"]
+        info = json.loads(self.call("GET", f"/api/docs/{doc['id']}")[1])
+        self.assertEqual(len(info["chapter_chars"]), info["chapters"])
+        self.assertGreater(info["chapter_chars"][1], 100)
+
+        # Older books (added before chapter lengths existed) get them filled in on first open.
+        self.store.set_document_info(doc["id"], "chapter_chars", None)
+        self.assertIsNone(self.store.get_document(doc["id"])["chapter_chars"])
+        info = json.loads(self.call("GET", f"/api/docs/{doc['id']}")[1])
+        self.assertEqual(len(info["chapter_chars"]), info["chapters"])
+        self.assertIsNotNone(self.store.get_document(doc["id"])["chapter_chars"])
+
+        status, body, _ = self.call("POST", f"/api/docs/{doc['id']}/bookmarks", {"chapter": 2, "position": 0.4, "label": "Do not act"})
+        self.assertEqual(status, 200)
+        b2 = json.loads(body)
+        b1 = json.loads(self.call("POST", f"/api/docs/{doc['id']}/bookmarks", {"chapter": 1, "position": 1.7, "label": "x" * 500})[1])
+        self.assertEqual(b1["position"], 1.0)        # clamped
+        self.assertEqual(len(b1["label"]), 200)      # trimmed
+        marks = json.loads(self.call("GET", f"/api/docs/{doc['id']}/bookmarks")[1])
+        self.assertEqual([m["id"] for m in marks], [b1["id"], b2["id"]])  # in reading order
+        self.assertEqual(self.call("POST", f"/api/docs/{doc['id']}/bookmarks", {"chapter": 99})[0], 400)
+        self.assertEqual(self.call("DELETE", f"/api/bookmarks/{b2['id']}")[0], 200)
+        self.assertEqual(self.call("DELETE", f"/api/bookmarks/{b2['id']}")[0], 404)
+
+        self.call("POST", "/api/highlights", {"text": "Waste no more time arguing", "doc_id": doc["id"], "chapter": 3})
+        self.call("POST", "/api/highlights", {"text": "From my grandfather Verus", "doc_id": doc["id"], "chapter": 1})
+        hl = json.loads(self.call("GET", f"/api/docs/{doc['id']}/highlights")[1])
+        self.assertEqual([h["chapter"] for h in hl], [1, 3])
+
+        # Removing the book removes its bookmarks too.
+        self.call("DELETE", f"/api/docs/{doc['id']}")
+        self.assertEqual(self.store.bookmarks(doc["id"]), [])
+
     def test_rejects_bad_uploads(self):
         status, body, _ = self.call("POST", "/api/docs?filename=notes.txt", raw=b"hello")
         self.assertEqual(status, 400)

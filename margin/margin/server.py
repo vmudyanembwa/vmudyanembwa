@@ -194,7 +194,43 @@ def make_handler(store, books_dir: Path | None = None):
 
     @route("GET", r"/api/docs/(\d+)")
     def doc_info(req, q, doc_id):
-        return get_doc(doc_id)
+        doc = get_doc(doc_id)
+        if doc["chapter_chars"] is None:
+            # Books added before page estimates existed: measure once and remember.
+            try:
+                with epub.Book(book_path(doc)) as book:
+                    doc["chapter_chars"] = book.chapter_lengths()
+                store.set_document_info(doc["id"], "chapter_chars", doc["chapter_chars"])
+            except (ApiError, epub.EpubError):
+                pass
+        return doc
+
+    @route("GET", r"/api/docs/(\d+)/bookmarks")
+    def list_bookmarks(req, q, doc_id):
+        return store.bookmarks(get_doc(doc_id)["id"])
+
+    @route("POST", r"/api/docs/(\d+)/bookmarks")
+    def add_bookmark(req, q, doc_id):
+        doc = get_doc(doc_id)
+        body = req.json()
+        chapter = _int(body.get("chapter", 0))
+        if not 0 <= chapter < doc["chapters"]:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "chapter out of range")
+        try:
+            position = float(body.get("position", 0))
+        except (TypeError, ValueError):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "position must be a number")
+        return store.add_bookmark(doc["id"], chapter, position, str(body.get("label", "")))
+
+    @route("DELETE", r"/api/bookmarks/(\d+)")
+    def delete_bookmark(req, q, bookmark_id):
+        if not store.delete_bookmark(int(bookmark_id)):
+            raise ApiError(HTTPStatus.NOT_FOUND, "bookmark not found")
+        return {"deleted": True}
+
+    @route("GET", r"/api/docs/(\d+)/highlights")
+    def doc_highlights(req, q, doc_id):
+        return store.document_highlights(get_doc(doc_id)["id"])
 
     @route("DELETE", r"/api/docs/(\d+)")
     def delete_doc(req, q, doc_id):

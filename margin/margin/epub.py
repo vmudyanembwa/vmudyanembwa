@@ -254,9 +254,22 @@ class Book:
             raise KeyError(path)
         return self.read(path), item_type
 
+    def chapter_lengths(self) -> list[int]:
+        """Characters of readable text per chapter; used to estimate pages left in the book."""
+        def count(nodes):
+            return sum(len(n) if isinstance(n, str) else count(n["c"]) for n in nodes)
+        lengths = []
+        for i in range(len(self.spine)):
+            try:
+                lengths.append(count(self.chapter(i)))
+            except (KeyError, EpubError):
+                lengths.append(0)
+        return lengths
+
     def info(self) -> dict:
         return {"title": self.title, "author": self.author, "language": self.language, "cover": self.cover,
-                "chapters": len(self.spine), "toc": self.toc, "chapter_titles": self.chapter_titles}
+                "chapters": len(self.spine), "toc": self.toc, "chapter_titles": self.chapter_titles,
+                "chapter_chars": self.chapter_lengths()}
 
 
 # ---------- Sanitiser ----------

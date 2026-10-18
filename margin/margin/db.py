@@ -74,6 +74,18 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 """
 
+SCHEMA += """
+CREATE TABLE IF NOT EXISTS bookmarks (
+    id INTEGER PRIMARY KEY,
+    doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    chapter INTEGER NOT NULL,
+    position REAL NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS bookmarks_doc ON bookmarks(doc_id, chapter);
+"""
+
 # Columns added after the first release; created on startup if an older database lacks them.
 MIGRATIONS = {
     "highlights": [
@@ -310,6 +322,7 @@ class Store:
         d.pop("sha1", None)
         chapters = max(1, info["chapters"])
         d["progress"] = round(min(1.0, (d["progress_chapter"] + d["progress_pos"]) / chapters), 4)
+        d["chapter_chars"] = info.get("chapter_chars")  # None for books added before page estimates
         d.update(chapters=info["chapters"], cover=info["cover"], toc=info["toc"],
                  chapter_titles=info["chapter_titles"], language=info.get("language", ""))
         return d
@@ -352,6 +365,36 @@ class Store:
                 return None
             self.conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
         return row["file"]
+
+    def set_document_info(self, doc_id: int, key: str, value):
+        """Fill in a metadata field computed after import (e.g. chapter lengths for older books)."""
+        with self._lock, self.conn:
+            row = self.conn.execute("SELECT info FROM documents WHERE id = ?", (doc_id,)).fetchone()
+            if row:
+                info = json.loads(row["info"])
+                info[key] = value
+                self.conn.execute("UPDATE documents SET info = ? WHERE id = ?", (json.dumps(info), doc_id))
+
+    def bookmarks(self, doc_id: int) -> list[dict]:
+        rows = self.conn.execute("SELECT * FROM bookmarks WHERE doc_id = ? ORDER BY chapter, position",
+                                 (doc_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_bookmark(self, doc_id: int, chapter: int, position: float, label: str) -> dict:
+        with self._lock, self.conn:
+            cur = self.conn.execute(
+                "INSERT INTO bookmarks(doc_id, chapter, position, label, created_at) VALUES (?, ?, ?, ?, ?)",
+                (doc_id, int(chapter), min(1.0, max(0.0, float(position))), label.strip()[:200], _now()))
+        return dict(self.conn.execute("SELECT * FROM bookmarks WHERE id = ?", (cur.lastrowid,)).fetchone())
+
+    def delete_bookmark(self, bookmark_id: int) -> bool:
+        with self._lock, self.conn:
+            return self.conn.execute("DELETE FROM bookmarks WHERE id = ?", (bookmark_id,)).rowcount > 0
+
+    def document_highlights(self, doc_id: int) -> list[dict]:
+        rows = self.conn.execute(self._HIGHLIGHT_SELECT + " WHERE h.doc_id = ? ORDER BY h.chapter, h.id",
+                                 (doc_id,)).fetchall()
+        return [self._highlight(r) for r in rows]
 
     def chapter_highlights(self, doc_id: int, chapter: int) -> list[dict]:
         rows = self.conn.execute(self._HIGHLIGHT_SELECT + " WHERE h.doc_id = ? AND h.chapter = ? ORDER BY h.id",

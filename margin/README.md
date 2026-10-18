@@ -71,6 +71,7 @@ python3 -m margin import-epub "~/Downloads/Some Book.epub"
 Books are copied to `~/.margin/books/`; adding the same file twice does nothing. Removing a book from the shelf keeps its highlights.
 
 - **Turning pages:** by default books are laid out as pages (two side by side on a wide screen) that you flip with `←`/`→` or Space, by clicking the left/right edge, swiping on a trackpad or touchscreen, or with the arrows at the bottom. Prefer one long column? Switch **Layout** to **Scroll** under **T**.
+- **Bookmarks & pages left:** tap the bookmark icon (or press `B`) to bookmark a page; a ribbon marks it. The list icon opens **Contents / Bookmarks / Highlights** for the book. The bottom bar shows pages left in the chapter and an estimate for the whole book (worked out from each chapter's length and how much text fits on your page, so it adjusts to text size and window).
 - **While reading:** select text → **Highlight** or **Note** (or press `H`). Click a highlight to add a note or tags, or remove it. The list icon opens the contents, **T** opens text, layout and theme settings.
 - **From your library:** highlights made in the reader have an **Open in book** link that jumps back to the exact passage.
 - **DRM:** books bought from stores (Kindle, Apple Books, Kobo, etc.) are usually DRM-protected and can't be opened outside their own app; Margin says so instead of failing silently. Most free and indie EPUBs (e.g. Project Gutenberg, Standard Ebooks) work.
