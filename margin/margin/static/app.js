@@ -699,7 +699,9 @@ async function renderShelf(message) {
 
 // ---------- Reader: reading view ----------
 
-const READER_DEFAULTS = { size: 20, theme: 'auto', font: 'serif' };  // auto = follow the Mac's light/dark setting
+// theme auto = follow the Mac's light/dark setting; layout pages = flip pages, scroll = one long column
+const READER_DEFAULTS = { size: 20, theme: 'auto', font: 'serif', layout: 'pages' };
+let pendingPosition = null;  // carries the reading position across a re-render (e.g. switching layout)
 const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
 
 function readerPrefs() {
@@ -811,8 +813,12 @@ async function renderRead(docId, chapterPart, params) {
   const signal = pageAbort.signal;
   const prefs = readerPrefs();
   const highlights = new Map(data.highlights.map((h) => [h.id, h]));
+  const paged = prefs.layout === 'pages';
+  const carried = pendingPosition;
+  pendingPosition = null;
 
   document.body.classList.add('reading');
+  document.body.classList.toggle('paged', paged);
   const effectiveTheme = () => (prefs.theme === 'auto' ? (systemDark.matches ? 'dark' : 'light') : prefs.theme);
   const applyPrefs = () => {
     const theme = effectiveTheme();
@@ -825,6 +831,7 @@ async function renderRead(docId, chapterPart, params) {
     text.style.setProperty('--reader-size', `${prefs.size}px`);
     text.dataset.font = prefs.font;
     saveReaderPrefs(prefs);
+    if (paged && laidOut) relayout();  // text size/font change the number of pages
   };
 
   // --- chapter text
@@ -836,21 +843,119 @@ async function renderRead(docId, chapterPart, params) {
     if (span) markSpan(text, span, h); else missing.push(h);
   }
 
-  // --- progress
+  // --- progress (shared by both layouts)
   const bar = el('i');
-  const position = () => {
+  let saveTimer;
+  const showProgress = () => { bar.style.width = `${((chapter + position()) / doc.chapters) * 100}%`; };
+  const saveSoon = () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => api(`docs/${doc.id}/progress`, { method: 'PUT', body: { chapter, position: position() } }).catch(() => {}), 700);
+  };
+
+  // --- scroll layout: position is how far down the chapter you are
+  const scrollPosition = () => {
     const top = text.getBoundingClientRect().top + window.scrollY;
     const room = text.offsetHeight - window.innerHeight * 0.6;
     return room > 0 ? Math.min(1, Math.max(0, (window.scrollY - top + window.innerHeight * 0.3) / room)) : 1;
   };
-  const showProgress = () => { bar.style.width = `${((chapter + position()) / doc.chapters) * 100}%`; };
-  let saveTimer;
-  window.addEventListener('scroll', () => {
-    showProgress();
+
+  // --- page layout: CSS columns flow the chapter into page-sized columns inside a clipped "stage";
+  // turning a page slides the column strip sideways by one page width.
+  const stage = el('div', { class: 'page-stage' }, text);
+  const pageLabel = el('span', { class: 'page-label' });
+  let page = 0;
+  let pages = 1;
+  let step = 1;
+  let laidOut = false;
+  const pagePosition = () => (pages > 1 ? page / (pages - 1) : 0);
+  const position = () => (paged ? pagePosition() : scrollPosition());
+
+  function layoutPages() {
+    const pagerHeight = 56;
+    const top = stage.getBoundingClientRect().top + window.scrollY;
+    const height = Math.max(240, window.innerHeight - top - pagerHeight);
+    const width = stage.clientWidth;
+    const spread = width >= 900;  // two pages side by side, like an open book
+    const gap = spread ? 72 : 40;
+    stage.style.height = `${height}px`;
+    text.style.height = `${height}px`;
+    text.style.columnWidth = `${spread ? (width - gap) / 2 : width}px`;
+    text.style.columnGap = `${gap}px`;
+    text.style.setProperty('--page-h', `${height}px`);
+    text.classList.toggle('spread', spread);
+    step = width + gap;
+    pages = Math.max(1, Math.ceil((text.scrollWidth + gap - 2) / step));
+    laidOut = true;
+  }
+
+  function showPage(n, animate = true) {
+    page = Math.min(Math.max(0, n), pages - 1);
+    text.style.transition = animate ? '' : 'none';
+    text.style.transform = `translateX(${-page * step}px)`;
+    pageLabel.textContent = pages > 1 ? `Page ${page + 1} of ${pages}` : 'Page 1 of 1';
+    prevPageButton.disabled = page === 0 && chapter === 0;
+    nextPageButton.disabled = page === pages - 1 && chapter === doc.chapters - 1;
     hideToolbar();
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => api(`docs/${doc.id}/progress`, { method: 'PUT', body: { chapter, position: position() } }).catch(() => {}), 700);
-  }, { signal, passive: true });
+    showProgress();
+    saveSoon();
+  }
+
+  function relayout() {
+    const keep = pagePosition();
+    layoutPages();
+    showPage(Math.round(keep * (pages - 1)), false);
+  }
+
+  const pageOf = (node) => Math.floor((node.getBoundingClientRect().left - text.getBoundingClientRect().left + 1) / step);
+  function nextPage() {
+    if (page < pages - 1) showPage(page + 1);
+    else if (chapter < doc.chapters - 1) go(chapter + 1);
+  }
+  function prevPage() {
+    if (page > 0) showPage(page - 1);
+    else if (chapter > 0) location.hash = `#/read/${doc.id}/${chapter - 1}?at=end`;
+  }
+  const prevPageButton = el('button', { class: 'btn ghost icon-only page-turn', type: 'button', 'aria-label': 'Previous page', onclick: () => prevPage() }, icon('back'));
+  const nextPageButton = el('button', { class: 'btn ghost icon-only page-turn', type: 'button', 'aria-label': 'Next page', onclick: () => nextPage() }, icon('next'));
+
+  if (paged) {
+    // Click/tap the outer edges of the page to turn it (the middle is left for selecting text).
+    stage.addEventListener('click', (ev) => {
+      if (!window.getSelection().isCollapsed || ev.target.closest('a, mark, button')) return;
+      const r = stage.getBoundingClientRect();
+      const x = (ev.clientX - r.left) / r.width;
+      if (x > 0.72) nextPage(); else if (x < 0.28) prevPage();
+    }, { signal });
+    // Swipe on touch screens.
+    let touchStart = null;
+    stage.addEventListener('touchstart', (ev) => { touchStart = [ev.touches[0].clientX, ev.touches[0].clientY]; }, { signal, passive: true });
+    stage.addEventListener('touchend', (ev) => {
+      if (!touchStart || !window.getSelection().isCollapsed) return;
+      const dx = ev.changedTouches[0].clientX - touchStart[0];
+      const dy = ev.changedTouches[0].clientY - touchStart[1];
+      touchStart = null;
+      if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) (dx < 0 ? nextPage : prevPage)();
+    }, { signal });
+    // Trackpad swipe or mouse wheel: one page per gesture.
+    let wheelSum = 0;
+    let wheelLock = false;
+    stage.addEventListener('wheel', (ev) => {
+      ev.preventDefault();
+      if (wheelLock) return;
+      wheelSum += Math.abs(ev.deltaX) > Math.abs(ev.deltaY) ? ev.deltaX : ev.deltaY;
+      if (Math.abs(wheelSum) < 40) return;
+      (wheelSum > 0 ? nextPage : prevPage)();
+      wheelSum = 0;
+      wheelLock = true;
+      setTimeout(() => { wheelLock = false; }, 550);
+    }, { signal, passive: false });
+    let resizeTimer;
+    window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(relayout, 150); }, { signal });
+    // Images change the page count once they load.
+    text.addEventListener('load', () => { if (laidOut) relayout(); }, { signal, capture: true });
+  } else {
+    window.addEventListener('scroll', () => { showProgress(); hideToolbar(); saveSoon(); }, { signal, passive: true });
+  }
 
   // --- selection toolbar (create highlight) and mark toolbar (note / remove)
   const toolbar = el('div', { class: 'sel-toolbar', role: 'toolbar', hidden: true });
@@ -955,11 +1060,22 @@ async function renderRead(docId, chapterPart, params) {
     themeButtons.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.themeOption === prefs.theme)));
     fontButtons.forEach((b) => b.setAttribute('aria-pressed', String(b.classList.contains(`font-${prefs.font}`))));
   };
+  const layoutButtons = [['pages', 'Pages'], ['scroll', 'Scroll']].map(([l, label]) => el('button', {
+    type: 'button', class: 'tab', 'aria-pressed': String(prefs.layout === l),
+    onclick: () => {
+      if (prefs.layout === l) return;
+      pendingPosition = position();  // keep your place in the chapter
+      prefs.layout = l;
+      saveReaderPrefs(prefs);
+      route();
+    },
+  }, label));
   const resize = (delta) => { prefs.size = Math.min(30, Math.max(14, prefs.size + delta)); applyPrefs(); syncSettings(); };
   const settingsPanel = el('div', { class: 'reader-panel settings-panel', hidden: true, 'aria-label': 'Reading settings' },
     el('div', { class: 'setting' }, el('span', {}, 'Text size'),
       el('div', { class: 'row' }, el('button', { class: 'btn', type: 'button', onclick: () => resize(-1), 'aria-label': 'Smaller text' }, 'A−'), sizeLabel,
         el('button', { class: 'btn', type: 'button', onclick: () => resize(1), 'aria-label': 'Larger text' }, 'A+'))),
+    el('div', { class: 'setting' }, el('span', {}, 'Layout'), el('div', { class: 'row' }, layoutButtons)),
     el('div', { class: 'setting' }, el('span', {}, 'Font'), el('div', { class: 'row' }, fontButtons)),
     el('div', { class: 'setting stacked' }, el('span', {}, 'Theme'), el('div', { class: 'themes' }, themeButtons)));
   syncSettings();
@@ -969,10 +1085,12 @@ async function renderRead(docId, chapterPart, params) {
     if (!ev.target.closest('.reader-panel, .reader-bar')) { tocPanel.hidden = true; settingsPanel.hidden = true; }
   }, { signal });
 
-  // --- keyboard: ← → chapters, Esc closes panels
+  // --- keyboard: ← → turn pages (or change chapter when scrolling), Esc closes panels
   document.addEventListener('keydown', (ev) => {
     if (ev.target.closest('input, textarea, dialog') || ev.metaKey || ev.ctrlKey || ev.altKey) return;
-    if (ev.key === 'ArrowRight' && chapter < doc.chapters - 1) go(chapter + 1);
+    if (paged && (ev.key === 'ArrowRight' || ev.key === 'PageDown' || (ev.key === ' ' && !ev.shiftKey))) { ev.preventDefault(); nextPage(); }
+    else if (paged && (ev.key === 'ArrowLeft' || ev.key === 'PageUp' || (ev.key === ' ' && ev.shiftKey))) { ev.preventDefault(); prevPage(); }
+    else if (ev.key === 'ArrowRight' && chapter < doc.chapters - 1) go(chapter + 1);
     else if (ev.key === 'ArrowLeft' && chapter > 0) go(chapter - 1);
     else if (ev.key === 'Escape') { tocPanel.hidden = true; settingsPanel.hidden = true; hideToolbar(); }
     else if (ev.key === 'h' && !window.getSelection().isCollapsed) createHighlight(false);
@@ -993,38 +1111,56 @@ async function renderRead(docId, chapterPart, params) {
         el('button', { class: 'btn ghost icon-only', type: 'button', title: 'Text & theme', 'aria-label': 'Text and theme', onclick: () => toggle(settingsPanel, tocPanel) }, icon('type'))),
       el('div', { class: 'reader-progress' }, bar)),
     tocPanel, settingsPanel,
-    text,
+    paged ? stage : text,
     missing.length ? el('p', { class: 'reader-note small muted' }, `${plural(missing.length, 'highlight')} from this chapter couldn’t be placed in the text (the book may have changed). They’re still in your library.`) : null,
-    el('nav', { class: 'chapter-nav', 'aria-label': 'Chapters' }, navButton(chapter - 1, 'prev'), navButton(chapter + 1, 'next')),
+    paged
+      ? el('nav', { class: 'pager', 'aria-label': 'Pages' }, prevPageButton, el('div', { class: 'pager-mid' }, pageLabel, el('span', {}, chapterName(chapter))), nextPageButton)
+      : el('nav', { class: 'chapter-nav', 'aria-label': 'Chapters' }, navButton(chapter - 1, 'prev'), navButton(chapter + 1, 'next')),
     toolbar,
   );
   applyPrefs();
 
-  // --- where to start: a linked highlight, an anchor, the saved position, or the top
-  const scrollToPosition = () => {
-    const target = params.get('hl') ? text.querySelector(`mark[data-id="${CSS.escape(params.get('hl'))}"]`)
-      : params.get('a') ? document.getElementById(`ch-${params.get('a')}`) : null;
+  // --- where to start: a linked highlight, an anchor, a carried/saved position, the end, or the top
+  const startTarget = () => (params.get('hl') ? text.querySelector(`mark[data-id="${CSS.escape(params.get('hl'))}"]`)
+    : params.get('a') ? document.getElementById(`ch-${params.get('a')}`) : null);
+  const savedPosition = carried ?? (resuming ? doc.progress_pos : null);
+  const flash = (target) => {
+    if (target.matches('mark')) for (const m of text.querySelectorAll(`mark[data-id="${target.dataset.id}"]`)) m.classList.add('flash');
+  };
+
+  const placeStart = () => {
+    const target = startTarget();
+    if (paged) {
+      layoutPages();
+      if (target) { showPage(pageOf(target), false); flash(target); }
+      else if (params.get('at') === 'end') showPage(pages - 1, false);
+      else if (savedPosition != null) showPage(Math.round(savedPosition * (pages - 1)), false);
+      else showPage(0, false);
+      requestAnimationFrame(() => { text.style.transition = ''; });
+      return;
+    }
     if (target) {
       target.scrollIntoView({ block: 'center' });
-      if (target.matches('mark')) for (const m of text.querySelectorAll(`mark[data-id="${target.dataset.id}"]`)) m.classList.add('flash');
-    } else if (resuming || (chapter === doc.progress_chapter && !chapterPart)) {
+      flash(target);
+    } else if (savedPosition != null) {
       const top = text.getBoundingClientRect().top + window.scrollY;
       const room = text.offsetHeight - window.innerHeight * 0.6;
-      window.scrollTo(0, Math.max(0, top - window.innerHeight * 0.3 + doc.progress_pos * room));
+      window.scrollTo(0, Math.max(0, top - window.innerHeight * 0.3 + savedPosition * room));
     } else {
       window.scrollTo(0, 0);
     }
     showProgress();
   };
-  requestAnimationFrame(scrollToPosition);
-  if (resuming || params.get('hl') || params.get('a')) {
+  if (paged) window.scrollTo(0, 0);
+  requestAnimationFrame(placeStart);
+  if (!paged && (savedPosition != null || startTarget())) {
     // Images above the saved spot load later and push text down; re-apply once they're in.
     let userScrolled = false;
     window.addEventListener('wheel', () => { userScrolled = true; }, { signal, once: true });
     window.addEventListener('touchmove', () => { userScrolled = true; }, { signal, once: true });
-    setTimeout(() => { if (!userScrolled && !signal.aborted) scrollToPosition(); }, 600);
+    setTimeout(() => { if (!userScrolled && !signal.aborted) placeStart(); }, 600);
   }
-  api(`docs/${doc.id}/progress`, { method: 'PUT', body: { chapter, position: resuming ? doc.progress_pos : 0 } }).catch(() => {});
+  api(`docs/${doc.id}/progress`, { method: 'PUT', body: { chapter, position: savedPosition ?? 0 } }).catch(() => {});
 }
 
 // ---------- Router ----------
@@ -1038,7 +1174,7 @@ async function route() {
   pageAbort = new AbortController();
   delete document.body.dataset.readerTheme;
   delete document.documentElement.dataset.theme;  // back to following the Mac's appearance
-  document.body.classList.remove('reading');
+  document.body.classList.remove('reading', 'paged');
   const [path, query = ''] = location.hash.replace(/^#/, '').split('?');
   const parts = path.split('/').filter(Boolean);
   currentPage = ['library', 'source', 'search', 'import', 'reader', 'read'].includes(parts[0]) ? parts[0] : 'review';
