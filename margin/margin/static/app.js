@@ -47,6 +47,8 @@ const ICONS = {
   type: ['M4 7V4h16v3', 'M9 20h6', 'M12 4v16'],
   next: ['M9 18l6-6-6-6'],
   sun: ['M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10z', 'M12 1v2', 'M12 21v2', 'M4.22 4.22l1.42 1.42', 'M18.36 18.36l1.42 1.42', 'M1 12h2', 'M21 12h2', 'M4.22 19.78l1.42-1.42', 'M18.36 5.64l1.42-1.42'],
+  expand: ['M8 3H5a2 2 0 0 0-2 2v3', 'M21 8V5a2 2 0 0 0-2-2h-3', 'M3 16v3a2 2 0 0 0 2 2h3', 'M16 21h3a2 2 0 0 0 2-2v-3'],
+  shrink: ['M8 3v3a2 2 0 0 1-2 2H3', 'M21 8h-3a2 2 0 0 1-2-2V3', 'M3 16h3a2 2 0 0 1 2 2v3', 'M16 21v-3a2 2 0 0 1 2-2h3'],
   bookmark: ['M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z'],
   moon: ['M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z'],
   highlighter: ['M9 11l-6 6v3h9l3-3', 'M22 12l-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4'],
@@ -930,6 +932,57 @@ async function renderRead(docId, chapterPart, params) {
 
   // --- bookmarks: one per page (or per screenful when scrolling)
   const bookmarkButton = el('button', { class: 'btn ghost icon-only', type: 'button', onclick: () => toggleBookmark() });
+
+  // --- full screen: the browser's Fullscreen API plus an "immersive" view that hides Margin's menu and
+  // tucks the reader toolbar away until you move the mouse. If the browser refuses fullscreen,
+  // the immersive view still works inside the window.
+  const fullscreenButton = el('button', { class: 'btn ghost icon-only', type: 'button', onclick: () => toggleFullscreen() });
+  const immersive = () => document.body.classList.contains('immersive');
+  let barTimer;
+  function showBar() {
+    document.body.classList.add('bar-visible');
+    clearTimeout(barTimer);
+    barTimer = setTimeout(() => {
+      // Keep it up while a panel is open or the pointer is on the toolbar.
+      if (!tocPanel.hidden || !settingsPanel.hidden || document.querySelector('.reader-bar:hover')) showBar();
+      else document.body.classList.remove('bar-visible');
+    }, 2500);
+  }
+  function setImmersive(on) {
+    document.body.classList.toggle('immersive', on);
+    fill(fullscreenButton, icon(on ? 'shrink' : 'expand'));
+    fullscreenButton.title = on ? 'Exit full screen (F or Esc)' : 'Full screen (F)';
+    fullscreenButton.setAttribute('aria-label', on ? 'Exit full screen' : 'Full screen');
+    if (on) showBar(); else { clearTimeout(barTimer); document.body.classList.remove('bar-visible'); }
+    if (paged && laidOut) requestAnimationFrame(() => relayout());  // more room → re-flow pages
+  }
+  async function toggleFullscreen() {
+    if (immersive()) {
+      setImmersive(false);
+      if (document.fullscreenElement || document.webkitFullscreenElement) {
+        await (document.exitFullscreen?.() ?? document.webkitExitFullscreen?.())?.catch?.(() => {});
+      }
+      return;
+    }
+    setImmersive(true);
+    const root = document.documentElement;
+    try { await (root.requestFullscreen?.() ?? root.webkitRequestFullscreen?.()); } catch { /* immersive view only */ }
+  }
+  for (const evName of ['fullscreenchange', 'webkitfullscreenchange']) {
+    // Esc handled by the browser leaves fullscreen; leave the immersive view with it.
+    document.addEventListener(evName, () => {
+      if (!document.fullscreenElement && !document.webkitFullscreenElement && immersive()) setImmersive(false);
+    }, { signal });
+  }
+  document.addEventListener('mousemove', (ev) => { if (immersive() && (ev.movementX || ev.movementY)) showBar(); }, { signal });
+  signal.addEventListener('abort', () => {
+    clearTimeout(barTimer);
+    if (location.hash.startsWith('#/read/')) return;  // next chapter, a bookmark, etc.: stay full screen
+    // Leaving the book: back to the normal window.
+    document.body.classList.remove('immersive', 'bar-visible');
+    if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+  });
+  setImmersive(immersive() || Boolean(document.fullscreenElement));
   function bookmarkHere() {
     return bookmarks.find((b) => {
       if (b.chapter !== chapter) return false;
@@ -999,6 +1052,7 @@ async function renderRead(docId, chapterPart, params) {
       const r = stage.getBoundingClientRect();
       const x = (ev.clientX - r.left) / r.width;
       if (x > 0.72) nextPage(); else if (x < 0.28) prevPage();
+      else if (immersive()) showBar();  // tap the middle to bring the toolbar back
     }, { signal });
     // Swipe on touch screens.
     let touchStart = null;
@@ -1226,7 +1280,13 @@ async function renderRead(docId, chapterPart, params) {
     else if (paged && (ev.key === 'ArrowLeft' || ev.key === 'PageUp' || (ev.key === ' ' && ev.shiftKey))) { ev.preventDefault(); prevPage(); }
     else if (ev.key === 'ArrowRight' && chapter < doc.chapters - 1) go(chapter + 1);
     else if (ev.key === 'ArrowLeft' && chapter > 0) go(chapter - 1);
-    else if (ev.key === 'Escape') { tocPanel.hidden = true; settingsPanel.hidden = true; hideToolbar(); }
+    else if (ev.key === 'Escape') {
+      // First Esc closes whatever is open; with nothing open it leaves full screen.
+      const somethingOpen = !tocPanel.hidden || !settingsPanel.hidden || !toolbar.hidden;
+      tocPanel.hidden = true; settingsPanel.hidden = true; hideToolbar();
+      if (!somethingOpen && immersive()) toggleFullscreen();
+    }
+    else if (ev.key === 'f') toggleFullscreen();
     else if (ev.key === 'h' && !window.getSelection().isCollapsed) createHighlight(false);
     else if (ev.key === 'b') toggleBookmark();
   }, { signal });
@@ -1243,6 +1303,7 @@ async function renderRead(docId, chapterPart, params) {
         el('button', { class: 'btn ghost icon-only', type: 'button', title: 'Highlights in this book', 'aria-label': 'Highlights in this book', onclick: () => openPanel('highlights') }, icon('highlighter')),
         el('button', { class: 'btn ghost icon-only', type: 'button', title: 'Contents, bookmarks & highlights', 'aria-label': 'Contents', onclick: () => openPanel('contents') }, icon('toc')),
         bookmarkButton,
+        fullscreenButton,
         modeButton,
         el('button', { class: 'btn ghost icon-only', type: 'button', title: 'Text & theme', 'aria-label': 'Text and theme', onclick: () => toggle(settingsPanel, tocPanel) }, icon('type'))),
       el('div', { class: 'reader-progress' }, bar)),

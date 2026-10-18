@@ -517,3 +517,19 @@ a.panel-item.panel-jump { display: grid; }
 .panel-item .btn { margin-top: 6px; opacity: .5; }
 .panel-item:hover .btn { opacity: 1; }
 .panel-empty { color: var(--muted); font-size: .88rem; padding: 12px 10px; margin: 0; }
+
+/* ---------- Reader: full screen / immersive ---------- */
+body.immersive .topbar { display: none; }
+body.immersive main { padding-top: 6px; }
+body.immersive .reader-bar {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 20; margin: 0;
+  padding: 10px max(16px, calc((100vw - 760px) / 2));
+  transform: translateY(-100%); opacity: 0; transition: transform .25s ease, opacity .25s ease;
+  box-shadow: 0 1px 0 var(--r-border);
+}
+body.immersive.paged .reader-bar { padding-left: max(16px, calc((100vw - 1180px) / 2)); padding-right: max(16px, calc((100vw - 1180px) / 2)); }
+body.immersive.bar-visible .reader-bar { transform: none; opacity: 1; }
+body.immersive .reader-bar .reader-progress { left: 0; right: 0; }
+body.immersive .toc-panel, body.immersive .settings-panel { top: 64px; }
+body.immersive:not(.paged) .reader-text { padding-top: 48px; }
+body.immersive .page-wrap { margin-top: 40px; }
