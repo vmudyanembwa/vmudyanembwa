@@ -288,6 +288,15 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.call("GET", "/api/export/csv")[0], 200)
         self.assertEqual(self.call("GET", "/api/export/markdown")[0], 200)
 
+    def test_parallel_requests(self):
+        """Regression: concurrent requests used to share the SQLite connection unsafely and fail."""
+        from concurrent.futures import ThreadPoolExecutor
+        self.call("POST", "/api/highlights", {"text": "Parallel one", "title": "Threads"})
+        paths = ["/api/stats", "/api/sources", "/api/highlights?q=parallel", "/api/tags", "/api/review"] * 30
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            statuses = list(pool.map(lambda path: self.call("GET", path)[0], paths))
+        self.assertEqual(set(statuses), {200})
+
     def test_bad_requests(self):
         self.assertEqual(self.call("POST", "/api/import", {"content": ""})[0], 400)
         self.assertEqual(self.call("GET", "/api/nope")[0], 404)
@@ -747,6 +756,87 @@ class ReaderApiTests(unittest.TestCase):
         self.assertIn("DRM", json.loads(body)["error"])
 
 
+class PdfTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import tempfile
+        from pdf_fixtures import SAMPLE_PAGES, make_pdf
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.books = Path(cls.tmp.name) / "books"
+        cls.store = Store(today=Clock())
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(cls.store, cls.books))
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+        cls.pdf_bytes = make_pdf(SAMPLE_PAGES)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        cls.store.close()
+        cls.tmp.cleanup()
+
+    call = ReaderApiTests.call
+
+    def test_fixture_is_a_real_pdf(self):
+        from margin import pdf
+        self.assertTrue(pdf.is_pdf(self.pdf_bytes))
+        self.assertTrue(self.pdf_bytes.rstrip().endswith(b"%%EOF"))
+        self.assertIn(b"/Count 4", self.pdf_bytes)
+        self.assertFalse(pdf.is_pdf(b"PK\x03\x04 not a pdf"))
+
+    def test_pdf_flow(self):
+        status, body, _ = self.call("POST", "/api/docs?filename=Marcus_Meditations.pdf", raw=self.pdf_bytes)
+        self.assertEqual(status, 200)
+        doc = json.loads(body)["document"]
+        self.assertEqual((doc["kind"], doc["title"], doc["chapters"]), ("pdf", "Marcus Meditations", 0))
+        self.assertTrue((self.books / doc["file"]).exists())
+
+        # The browser serves PDF.js the file; it must never run as a page.
+        status, data, headers = self.call("GET", f"/api/docs/{doc['id']}/file")
+        self.assertEqual((status, headers["Content-Type"], data), (200, "application/pdf", self.pdf_bytes))
+        self.assertIn("sandbox", headers["Content-Security-Policy"])
+
+        # The browser reports what it found in the PDF.
+        meta = {"title": "Meditations", "author": "Marcus Aurelius", "pages": 4,
+                "toc": [{"title": "Book One", "chapter": 0, "level": 0}, {"title": "Book Two", "chapter": 1, "level": 0},
+                        {"title": "Book Three", "chapter": 2, "level": 0}, {"title": "Bad", "chapter": 99, "level": 0}]}
+        status, body, _ = self.call("PUT", f"/api/docs/{doc['id']}/meta", meta)
+        self.assertEqual(status, 200)
+        doc = json.loads(body)
+        self.assertEqual((doc["title"], doc["author"], doc["chapters"]), ("Meditations", "Marcus Aurelius", 4))
+        self.assertEqual([t["title"] for t in doc["toc"]], ["Book One", "Book Two", "Book Three"])  # out-of-range dropped
+        self.assertEqual(doc["chapter_titles"], ["Book One", "Book Two", "Book Three", "Book Three"])
+        self.assertEqual(self.call("PUT", f"/api/docs/{doc['id']}/meta", {"pages": 0})[0], 400)
+
+        # Cover: PNG/JPEG only.
+        from epub_fixtures import tiny_png
+        self.assertEqual(self.call("GET", f"/api/docs/{doc['id']}/image")[0], 404)
+        self.assertEqual(self.call("POST", f"/api/docs/{doc['id']}/cover", raw=b"<svg>")[0], 400)
+        self.assertEqual(self.call("POST", f"/api/docs/{doc['id']}/cover", raw=tiny_png())[0], 200)
+        status, data, headers = self.call("GET", f"/api/docs/{doc['id']}/image")
+        self.assertEqual((status, headers["Content-Type"]), (200, "image/png"))
+
+        # Pages act like chapters: highlights and bookmarks are stored per page.
+        status, body, _ = self.call("GET", f"/api/docs/{doc['id']}/chapter/1")
+        self.assertEqual(json.loads(body)["nodes"], [])
+        status, body, _ = self.call("POST", "/api/highlights", {"text": "Begin the morning", "doc_id": doc["id"], "chapter": 1})
+        self.assertEqual(json.loads(body)["highlight"]["location"], "p. 2 · Book Two")
+        self.assertEqual(self.call("POST", f"/api/docs/{doc['id']}/bookmarks", {"chapter": 3, "position": 0})[0], 200)
+
+        # EPUB-only endpoints and PDF-only endpoints don't mix.
+        from epub_fixtures import make_epub
+        epub_doc = json.loads(self.call("POST", "/api/docs", raw=make_epub())[1])["document"]
+        self.assertEqual(epub_doc["kind"], "epub")
+        self.assertEqual(self.call("GET", f"/api/docs/{epub_doc['id']}/file")[0], 400)
+        self.assertEqual(self.call("PUT", f"/api/docs/{epub_doc['id']}/meta", meta)[0], 400)
+
+        # Removing the PDF removes its file and cover.
+        self.assertEqual(self.call("DELETE", f"/api/docs/{doc['id']}")[0], 200)
+        self.assertFalse((self.books / doc["file"]).exists())
+        self.assertFalse((self.books / f"{doc['file']}.cover").exists())
+
+
 class ImportEpubCliTests(unittest.TestCase):
     def test_files_and_folders(self):
         import contextlib
@@ -759,18 +849,21 @@ class ImportEpubCliTests(unittest.TestCase):
             (tmp / "in" / "a.epub").write_bytes(make_epub(title="Book A"))
             (tmp / "in" / "nested" / "b.epub").write_bytes(make_epub(version=2, title="Book B"))
             (tmp / "in" / "drm.epub").write_bytes(make_epub(drm="adobe", title="Locked"))
+            from pdf_fixtures import SAMPLE_PAGES, make_pdf
+            (tmp / "in" / "nested" / "Paper.pdf").write_bytes(make_pdf(SAMPLE_PAGES))
             with zipfile.ZipFile(io.BytesIO(make_epub(title="Book C"))) as z:
                 z.extractall(tmp / "in" / "c.epub")   # Apple Books style unpacked folder
             db = tmp / "data" / "m.db"
             out = io.StringIO()
             with contextlib.redirect_stdout(out), self.assertLogs(level="ERROR"):
                 self.assertEqual(main(["--db", str(db), "import-epub", str(tmp / "in")]), 0)
-            self.assertIn("3 added, 0 already in your reader, 1 couldn't be read", out.getvalue())
+            self.assertIn("4 added, 0 already in your reader, 1 couldn't be read", out.getvalue())
             out = io.StringIO()
             with contextlib.redirect_stdout(out), self.assertLogs(level="ERROR"):
                 main(["--db", str(db), "import-epub", str(tmp / "in")])
-            self.assertIn("0 added, 3 already in your reader", out.getvalue())
+            self.assertIn("0 added, 4 already in your reader", out.getvalue())
             self.assertEqual(len(list((tmp / "data" / "books").glob("*.epub"))), 3)
+            self.assertEqual(len(list((tmp / "data" / "books").glob("*.pdf"))), 1)
 
 
 class MigrationTests(unittest.TestCase):

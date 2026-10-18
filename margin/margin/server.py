@@ -10,11 +10,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import apple_books, epub, export, importers
+from . import apple_books, epub, export, importers, pdf
 
 log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
+mimetypes.add_type("text/javascript", ".mjs")  # PDF.js ships as ES modules; browsers require a JS type
 MAX_BODY = 50 * 1024 * 1024  # Kindle clipping files from years of reading can be large
 MAX_BOOK = 300 * 1024 * 1024  # illustrated EPUBs can be big
 
@@ -96,9 +97,10 @@ def make_handler(store, books_dir: Path | None = None):
             chapter = _int(body.get("chapter", 0))
             if not 0 <= chapter < doc["chapters"]:
                 raise ApiError(HTTPStatus.BAD_REQUEST, "chapter out of range")
-            title = doc["chapter_titles"][chapter]
+            title = doc["chapter_titles"][chapter] if chapter < len(doc["chapter_titles"]) else ""
+            where = f"p. {chapter + 1}" if doc["kind"] == "pdf" else f"Ch. {chapter + 1}"
             item.update(title=doc["title"], author=doc["author"], doc_id=doc["id"], chapter=chapter,
-                        location=f"Ch. {chapter + 1}" + (f" · {title}" if title else ""),
+                        location=where + (f" · {title}" if title else ""),
                         highlighted_at=date.today().isoformat())
         highlight = store.add_highlight({**item, "tags": tags})
         if not highlight:
@@ -187,15 +189,18 @@ def make_handler(store, books_dir: Path | None = None):
             raise ApiError(HTTPStatus.SERVICE_UNAVAILABLE, "the reader isn't configured")
         data = req.raw_body(MAX_BOOK)
         try:
-            doc, created = epub.add_to_library(store, data, books_dir)
-        except epub.EpubError as e:
+            if pdf.is_pdf(data):
+                doc, created = pdf.add_to_library(store, data, books_dir, q.get("filename", ""))
+            else:
+                doc, created = epub.add_to_library(store, data, books_dir)
+        except (epub.EpubError, pdf.PdfError) as e:
             raise ApiError(HTTPStatus.BAD_REQUEST, f"{q.get('filename') or 'That file'}: {e}")
         return {"document": doc, "created": created}
 
     @route("GET", r"/api/docs/(\d+)")
     def doc_info(req, q, doc_id):
         doc = get_doc(doc_id)
-        if doc["chapter_chars"] is None:
+        if doc["chapter_chars"] is None and doc["kind"] == "epub":
             # Books added before page estimates existed: measure once and remember.
             try:
                 with epub.Book(book_path(doc)) as book:
@@ -239,6 +244,7 @@ def make_handler(store, books_dir: Path | None = None):
             raise ApiError(HTTPStatus.NOT_FOUND, "book not found")
         if books_dir is not None:
             (books_dir / file).unlink(missing_ok=True)
+            (books_dir / f"{file}.cover").unlink(missing_ok=True)
         return {"deleted": True}
 
     @route("GET", r"/api/docs/(\d+)/chapter/(\d+)")
@@ -247,6 +253,9 @@ def make_handler(store, books_dir: Path | None = None):
         index = int(index)
         if index >= doc["chapters"]:
             raise ApiError(HTTPStatus.NOT_FOUND, "no such chapter")
+        if doc["kind"] == "pdf":
+            return {"index": index, "title": doc["chapter_titles"][index], "nodes": [],
+                    "highlights": store.chapter_highlights(doc["id"], index)}
         try:
             with epub.Book(book_path(doc)) as book:
                 nodes = book.chapter(index)
@@ -258,6 +267,12 @@ def make_handler(store, books_dir: Path | None = None):
     @route("GET", r"/api/docs/(\d+)/image")
     def doc_image(req, q, doc_id):
         doc = get_doc(doc_id)
+        if doc["kind"] == "pdf":
+            cover = book_path(doc).with_name(f"{doc['file']}.cover")
+            data = cover.read_bytes() if cover.exists() else b""
+            if not pdf.cover_type(data):
+                raise ApiError(HTTPStatus.NOT_FOUND, "no cover yet")
+            return Download(data, pdf.cover_type(data), None, {"Cache-Control": "private, max-age=86400"})
         path = q.get("path") or doc["cover"]
         try:
             with epub.Book(book_path(doc)) as book:
@@ -267,6 +282,39 @@ def make_handler(store, books_dir: Path | None = None):
         # Book images (SVG especially) must never run as a page on this origin.
         return Download(data, ctype, None, {"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
                                             "Cache-Control": "private, max-age=86400"})
+
+    def get_pdf(doc_id) -> dict:
+        doc = get_doc(doc_id)
+        if doc["kind"] != "pdf":
+            raise ApiError(HTTPStatus.BAD_REQUEST, "not a PDF")
+        return doc
+
+    @route("GET", r"/api/docs/(\d+)/file")
+    def pdf_file(req, q, doc_id):
+        doc = get_pdf(doc_id)
+        # Fetched by PDF.js; never let a PDF opened directly run as a page on this origin.
+        return Download(book_path(doc).read_bytes(), "application/pdf", None,
+                        {"Content-Security-Policy": "sandbox", "Cache-Control": "private, max-age=86400"})
+
+    @route("PUT", r"/api/docs/(\d+)/meta")
+    def pdf_meta(req, q, doc_id):
+        doc = get_pdf(doc_id)
+        try:
+            meta = pdf.clean_meta(req.json())
+        except pdf.PdfError as e:
+            raise ApiError(HTTPStatus.BAD_REQUEST, str(e))
+        store.update_document_meta(doc["id"], meta)
+        return store.get_document(doc["id"])
+
+    @route("POST", r"/api/docs/(\d+)/cover")
+    def pdf_cover(req, q, doc_id):
+        doc = get_pdf(doc_id)
+        data = req.raw_body(pdf.MAX_COVER_BYTES)
+        if not pdf.cover_type(data):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "cover must be a PNG or JPEG image")
+        book_path(doc).with_name(f"{doc['file']}.cover").write_bytes(data)
+        store.set_document_info(doc["id"], "cover", "cover")
+        return {"saved": True}
 
     @route("PUT", r"/api/docs/(\d+)/progress")
     def doc_progress(req, q, doc_id):
@@ -328,7 +376,10 @@ def make_handler(store, books_dir: Path | None = None):
                 match = pattern.match(url.path)
                 if m == method and match:
                     try:
-                        result = fn(self, query, *match.groups())
+                        # The server answers requests on several threads but shares one SQLite
+                        # connection, so API handlers run one at a time (they take milliseconds).
+                        with store.lock:
+                            result = fn(self, query, *match.groups())
                     except ApiError as e:
                         return self._send_json({"error": str(e)}, e.status)
                     except Exception:

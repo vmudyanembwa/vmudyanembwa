@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import apple_books, digest, epub, export, importers, macos
+from . import apple_books, digest, epub, export, importers, macos, pdf
 from .db import Store
 
 DEFAULT_DB = os.environ.get("MARGIN_DB", str(Path.home() / ".margin" / "margin.db"))
@@ -34,8 +34,9 @@ def main(argv=None) -> int:
     p.add_argument("--annotations", type=Path, help="AEAnnotation*.sqlite (default: found automatically)")
     p.add_argument("--library", type=Path, help="BKLibrary*.sqlite (default: found automatically)")
 
-    p = sub.add_parser("import-epub", help="add EPUB books to the reader (files or folders; safe to re-run)")
-    p.add_argument("paths", type=Path, nargs="+", help=".epub files, unpacked EPUB folders, or folders to search")
+    p = sub.add_parser("import-epub", aliases=["import-books"],
+                       help="add EPUB and PDF books to the reader (files or folders; safe to re-run)")
+    p.add_argument("paths", type=Path, nargs="+", help=".epub/.pdf files, unpacked EPUB folders, or folders to search")
 
     p = sub.add_parser("digest", help="email today's review (set up first with setup-email)")
     p.add_argument("--dry-run", action="store_true", help="print the email instead of sending it")
@@ -88,7 +89,7 @@ def run(args, store) -> int:
         items = apple_books.read_highlights(args.annotations, args.library)
         result = store.add_highlights(items)
         print(f"Apple Books: {len(items)} found, {result['added']} added, {result['skipped']} already present")
-    elif args.command == "import-epub":
+    elif args.command in ("import-epub", "import-books"):
         return import_epubs(store, args.paths, args.books_dir)
     elif args.command == "digest":
         n = digest.send_digest(store, dry_run=args.dry_run, config=digest.load_config(args.email_config))
@@ -130,13 +131,13 @@ Test the morning job now:  python3 -m margin daily""")
 
 
 def find_epubs(path: Path) -> list[Path]:
-    """A .epub file, an unpacked EPUB folder, or a folder to search (recursively) for either."""
+    """A .epub/.pdf file, an unpacked EPUB folder, or a folder to search (recursively) for any of them."""
     if path.is_file() or (path / "META-INF" / "container.xml").exists():
         return [path]
     if not path.is_dir():
         raise ValueError(f"{path} doesn't exist")
     found = []
-    for p in sorted(path.rglob("*.epub")):
+    for p in sorted([*path.rglob("*.epub"), *path.rglob("*.pdf")]):
         # Skip files inside an unpacked book we're already importing.
         if not any(parent in found for parent in p.parents):
             found.append(p)
@@ -146,13 +147,18 @@ def find_epubs(path: Path) -> list[Path]:
 def import_epubs(store, paths: list[Path], books_dir: Path) -> int:
     books = [b for p in paths for b in find_epubs(p)]
     if not books:
-        print("No EPUB files found.")
+        print("No EPUB or PDF files found.")
         return 1
     added = existing = failed = 0
     for book in books:
         try:
-            doc, created = epub.add_to_library(store, epub.read_bytes(book), books_dir)
-        except (epub.EpubError, OSError) as e:
+            data = epub.read_bytes(book)
+            if pdf.is_pdf(data):
+                # Page count, outline and cover are filled in the first time it's opened in the browser.
+                doc, created = pdf.add_to_library(store, data, books_dir, book.name)
+            else:
+                doc, created = epub.add_to_library(store, data, books_dir)
+        except (epub.EpubError, pdf.PdfError, OSError) as e:
             logging.error("%s: %s", book.name, e)
             failed += 1
             continue

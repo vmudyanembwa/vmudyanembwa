@@ -442,7 +442,7 @@ async function renderSearch(params) {
 
 const SOURCES = [
   { key: 'kindle', label: 'Kindle', desc: 'My Clippings.txt from your Kindle', icon: 'kindle', colour: '#232f3e' },
-  { key: 'epub', label: 'EPUB book', desc: 'Read it in Margin and highlight', icon: 'highlighter', colour: '#c2410c' },
+  { key: 'epub', label: 'EPUB or PDF book', desc: 'Read it in Margin and highlight', icon: 'highlighter', colour: '#c2410c' },
   { key: 'apple-books', label: 'Apple Books', desc: 'Highlights and notes on this Mac', icon: 'books', colour: '#f28c28' },
   { key: 'csv', label: 'CSV / Readwise', desc: 'A Readwise export or any CSV', icon: 'table', colour: '#1f9d55' },
   { key: 'paste', label: 'Paste text', desc: 'Several highlights at once', icon: 'paste', colour: '#7c4dff' },
@@ -481,20 +481,20 @@ function filePanel(title, intro, accept, steps) {
 const PANELS = {
   epub: () => {
     const status = statusLine();
-    const input = el('input', { type: 'file', accept: '.epub,application/epub+zip', multiple: true });
+    const input = el('input', { type: 'file', accept: '.epub,.pdf,application/epub+zip,application/pdf', multiple: true });
     const drop = el('label', { class: 'dropzone' }, input, icon('upload'),
-      el('div', {}, el('strong', {}, 'Drop EPUB files here'), ' or click to choose'));
+      el('div', {}, el('strong', {}, 'Drop EPUB or PDF files here'), ' or click to choose'));
     const go = (files) => uploadBooks(files, status);
     input.addEventListener('change', () => { go([...input.files]); input.value = ''; });
     for (const evName of ['dragenter', 'dragover']) drop.addEventListener(evName, (ev) => { ev.preventDefault(); drop.classList.add('over'); });
     for (const evName of ['dragleave', 'drop']) drop.addEventListener(evName, () => drop.classList.remove('over'));
     drop.addEventListener('drop', (ev) => { ev.preventDefault(); go([...ev.dataTransfer.files]); });
-    return [el('h2', {}, 'Add EPUB books'),
+    return [el('h2', {}, 'Add EPUB or PDF books'),
       el('p', {}, 'Books open in the Reader. Highlight as you read and the highlights land in your library and Daily Review.'),
       drop, status,
       el('ol', { class: 'steps' },
-        el('li', {}, 'DRM-free EPUBs only — store-bought books with DRM can’t be opened outside their own app.'),
-        el('li', {}, ['To add a whole folder at once: ', el('code', {}, 'python3 -m margin import-epub ~/Books')]))];
+        el('li', {}, 'DRM-free books only — store-bought books with DRM can’t be opened outside their own app. Password-protected PDFs need the password removed first.'),
+        el('li', {}, ['To add a whole folder at once: ', el('code', {}, 'python3 -m margin import-books ~/Books')]))];
   },
   kindle: () => filePanel('Import from Kindle', 'Re-import any time — only new highlights are added.', '.txt,text/plain', [
     'Connect your Kindle to your Mac with a USB cable.',
@@ -607,19 +607,24 @@ function renderImport(sub) {
 // ---------- Reader: shelf ----------
 
 async function uploadBooks(files, status) {
-  const books = files.filter((f) => /\.epub$/i.test(f.name) || f.type === 'application/epub+zip');
-  if (!books.length) { status.set('Choose .epub files.', 'err'); return; }
+  const books = files.filter((f) => /\.(epub|pdf)$/i.test(f.name) || ['application/epub+zip', 'application/pdf'].includes(f.type));
+  if (!books.length) { status.set('Choose .epub or .pdf files.', 'err'); return; }
   let added = 0;
   const problems = [];
   for (const [i, f] of books.entries()) {
     status.set(`Adding ${f.name}${books.length > 1 ? ` (${i + 1} of ${books.length})` : ''}…`);
     try {
       const res = await fetch(`/api/docs?filename=${encodeURIComponent(f.name)}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/epub+zip' }, body: f,
+        method: 'POST', headers: { 'Content-Type': f.type || 'application/octet-stream' }, body: f,
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `Upload failed (${res.status})`);
       if (data.created) added += 1;
+      if (data.document.kind === 'pdf' && !data.document.chapters) {
+        // Read the PDF's title, pages, outline and cover now, so the shelf shows it properly.
+        status.set(`Reading ${f.name}…`);
+        await preparePdf(data.document, await pdfFor(data.document));
+      }
     } catch (e) { problems.push(e.message); }
   }
   const summary = `${plural(added, 'book')} added${books.length - added - problems.length ? `, ${books.length - added - problems.length} already on your shelf` : ''}.`;
@@ -641,14 +646,14 @@ async function renderShelf(message) {
   const docs = await api('docs');
   const status = statusLine();
   if (message) status.set(...message);
-  const input = el('input', { type: 'file', accept: '.epub,application/epub+zip', multiple: true, hidden: true });
+  const input = el('input', { type: 'file', accept: '.epub,.pdf,application/epub+zip,application/pdf', multiple: true, hidden: true });
   // After an upload the shelf is redrawn; carry the result message over so errors (e.g. DRM) stay visible.
   const afterUpload = async (files) => {
     await uploadBooks(files, status);
     renderShelf([status.textContent, status.className.replace('status', '').trim()]);
   };
   input.addEventListener('change', () => { const files = [...input.files]; input.value = ''; afterUpload(files); });
-  const addButton = el('button', { class: 'btn primary', type: 'button', onclick: () => input.click() }, icon('plus'), 'Add EPUB');
+  const addButton = el('button', { class: 'btn primary', type: 'button', onclick: () => input.click() }, icon('plus'), 'Add book');
 
   // Drop books anywhere on the page.
   for (const evName of ['dragenter', 'dragover']) view.addEventListener(evName, (ev) => { ev.preventDefault(); view.classList.add('dropping'); }, { signal: pageAbort.signal });
@@ -662,12 +667,12 @@ async function renderShelf(message) {
   }, { signal: pageAbort.signal });
 
   const head = el('div', { class: 'page-head' },
-    el('div', {}, el('h1', {}, 'Reader'), el('p', {}, docs.length ? 'Pick up where you left off. Drop EPUB files anywhere on this page to add more.' : 'Your EPUB books, with highlights that flow into your Daily Review.')),
+    el('div', {}, el('h1', {}, 'Reader'), el('p', {}, docs.length ? 'Pick up where you left off. Drop EPUB or PDF files anywhere on this page to add more.' : 'Your EPUB and PDF books, with highlights that flow into your Daily Review.')),
     el('div', { class: 'row' }, addButton, input));
 
   if (!docs.length) {
     fill(view, head, status, emptyState('books', 'No books yet',
-      'Add DRM-free EPUB files — drag them onto this page or use the button. Select text while reading to highlight it.',
+      'Add DRM-free EPUB or PDF files — drag them onto this page or use the button. Select text while reading to highlight it.',
       el('button', { class: 'btn primary', type: 'button', onclick: () => input.click() }, icon('plus'), 'Add your first book')));
     return;
   }
@@ -678,7 +683,7 @@ async function renderShelf(message) {
   const continueCard = el('a', { class: 'card continue', href: `#/read/${current.id}` },
     bookCover(current, 'shelf'),
     el('div', { class: 'continue-body' },
-      el('span', { class: 'eyebrow' }, current.last_opened ? 'Continue reading' : 'Start reading'),
+      el('span', { class: 'eyebrow' }, current.last_opened ? 'Continue reading' : 'Start reading', current.kind === 'pdf' ? ' · PDF' : ''),
       el('h2', {}, current.title),
       current.author ? el('p', { class: 'muted' }, current.author) : null,
       el('div', { class: 'continue-progress' }, progressBar(current), el('span', { class: 'small muted' }, `${pct(current)}%`)),
@@ -688,7 +693,7 @@ async function renderShelf(message) {
     rest.length ? el('h2', { class: 'shelf-h' }, 'Your shelf') : null,
     rest.length ? el('div', { class: 'shelf' }, rest.map((d) => el('div', { class: 'shelf-item' },
       el('a', { href: `#/read/${d.id}`, class: 'shelf-link' },
-        bookCover(d, 'shelf'),
+        el('div', { class: 'cover-wrap' }, bookCover(d, 'shelf'), d.kind === 'pdf' ? el('span', { class: 'kind-badge' }, 'PDF') : null),
         el('strong', {}, d.title),
         d.author ? el('span', { class: 'muted small' }, d.author) : null,
         el('div', { class: 'shelf-progress' }, progressBar(d), el('span', { class: 'small muted' }, d.progress ? `${pct(d)}%` : 'New'))),
@@ -700,6 +705,75 @@ async function renderShelf(message) {
         },
       }, icon('trash'))))) : null,
   );
+}
+
+// ---------- Reader: PDF support (PDF.js, loaded only when a PDF is opened) ----------
+
+let pdfjsLib = null;
+const pdfDocs = new Map();  // doc id → Promise of the opened PDF, so flipping pages doesn't re-parse it
+
+async function loadPdfJs() {
+  if (!pdfjsLib) {
+    pdfjsLib = await import('./vendor/pdfjs/pdf.min.mjs');
+    pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('vendor/pdfjs/pdf.worker.min.mjs', location.href).href;
+  }
+  return pdfjsLib;
+}
+
+function pdfFor(doc) {
+  if (!pdfDocs.has(doc.id)) {
+    const opening = loadPdfJs()
+      // isEvalSupported:false: never compile code from a PDF (defence in depth for CVE-2024-4367).
+      .then((lib) => lib.getDocument({ url: `/api/docs/${doc.id}/file`, isEvalSupported: false, enableXfa: false }).promise)
+      .catch((e) => {
+        pdfDocs.delete(doc.id);
+        if (e?.name === 'PasswordException') throw new Error('This PDF is password-protected. Remove the password (e.g. in Preview: File → Export, untick Encrypt) and add it again.');
+        throw new Error(`Couldn’t open this PDF (${e?.message || e}).`);
+      });
+    pdfDocs.set(doc.id, opening);
+  }
+  return pdfDocs.get(doc.id);
+}
+
+/** Title, author, page count and outline, as reported by PDF.js. */
+async function describePdf(pdfDoc) {
+  const { info = {} } = await pdfDoc.getMetadata().catch(() => ({}));
+  const toc = [];
+  async function walk(items, level) {
+    for (const item of items || []) {
+      if (toc.length >= 3000) return;
+      let pageIndex = null;
+      try {
+        let dest = item.dest;
+        if (typeof dest === 'string') dest = await pdfDoc.getDestination(dest);
+        if (Array.isArray(dest)) pageIndex = typeof dest[0] === 'number' ? dest[0] : await pdfDoc.getPageIndex(dest[0]);
+      } catch { /* outline entry without a usable destination */ }
+      if (pageIndex != null && item.title) toc.push({ title: item.title, chapter: pageIndex, level });
+      await walk(item.items, level + 1);
+    }
+  }
+  await walk(await pdfDoc.getOutline().catch(() => null), 0);
+  return { title: info.Title || '', author: info.Author || '', pages: pdfDoc.numPages, toc };
+}
+
+async function renderPdfCover(pdfDoc) {
+  const page = await pdfDoc.getPage(1);
+  const viewport = page.getViewport({ scale: 360 / page.getViewport({ scale: 1 }).width });
+  const canvas = el('canvas');
+  canvas.width = Math.floor(viewport.width);
+  canvas.height = Math.floor(viewport.height);
+  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+}
+
+/** First open (or right after upload): store the PDF's details and a cover image on the server. */
+async function preparePdf(doc, pdfDoc) {
+  const updated = await api(`docs/${doc.id}/meta`, { method: 'PUT', body: await describePdf(pdfDoc) });
+  try {
+    const cover = await renderPdfCover(pdfDoc);
+    if (cover) await fetch(`/api/docs/${doc.id}/cover`, { method: 'POST', headers: { 'Content-Type': 'image/png' }, body: cover });
+  } catch { /* the book still works without a cover */ }
+  return updated;
 }
 
 // ---------- Reader: reading view ----------
@@ -811,7 +885,11 @@ function unmark(root, id) {
 }
 
 async function renderRead(docId, chapterPart, params) {
-  const doc = await api(`docs/${docId}`);
+  let doc = await api(`docs/${docId}`);
+  // PDFs: each page is a "chapter" (highlights, bookmarks and progress are stored per page).
+  const isPdf = doc.kind === 'pdf';
+  const pdfDoc = isPdf ? await pdfFor(doc) : null;
+  if (isPdf && !doc.chapters) doc = await preparePdf(doc, pdfDoc);
   const resuming = chapterPart == null;
   const chapter = Math.min(Math.max(0, resuming ? doc.progress_chapter : Number(chapterPart) || 0), doc.chapters - 1);
   const [data, bookmarkList] = await Promise.all([api(`docs/${docId}/chapter/${chapter}`), api(`docs/${docId}/bookmarks`)]);
@@ -841,12 +919,44 @@ async function renderRead(docId, chapterPart, params) {
   };
 
   // --- chapter text
-  const text = el('article', { class: 'reader-text', lang: doc.language || null });
-  text.append(renderNodes(data.nodes, doc.id));
+  const text = el('article', { class: `reader-text${isPdf ? ' pdf-text' : ''}`, lang: doc.language || null });
+  if (!isPdf) text.append(renderNodes(data.nodes, doc.id));
   const missing = [];
-  for (const h of data.highlights) {
-    const span = findText(text, h.text);
-    if (span) markSpan(text, span, h); else missing.push(h);
+  const markExisting = () => {
+    missing.length = 0;
+    for (const h of highlights.values()) {
+      const span = findText(text, h.text);
+      if (span) markSpan(text, span, h); else missing.push(h);
+    }
+  };
+  if (!isPdf) markExisting();
+
+  // PDF page: the page drawn on a canvas, with PDF.js's invisible text layer on top for selecting text.
+  let drawToken = 0;
+  async function drawPdfPage() {
+    const token = ++drawToken;
+    const page = await pdfDoc.getPage(chapter + 1);
+    const base = page.getViewport({ scale: 1 });
+    const availWidth = paged ? stage.clientWidth : Math.min(view.clientWidth, 1000);
+    const availHeight = paged ? stage.clientHeight : Infinity;
+    const viewport = page.getViewport({ scale: Math.min(availWidth / base.width, availHeight / base.height) });
+    const ratio = window.devicePixelRatio || 1;
+    const canvas = el('canvas', { 'aria-hidden': 'true' });
+    canvas.width = Math.floor(viewport.width * ratio);
+    canvas.height = Math.floor(viewport.height * ratio);
+    canvas.style.width = `${Math.floor(viewport.width)}px`;
+    canvas.style.height = `${Math.floor(viewport.height)}px`;
+    const layer = el('div', { class: 'textLayer' });
+    const sheet = el('div', { class: 'pdf-page' }, canvas, layer);
+    sheet.style.width = `${Math.floor(viewport.width)}px`;
+    sheet.style.height = `${Math.floor(viewport.height)}px`;
+    sheet.style.setProperty('--scale-factor', viewport.scale);
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport, transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : undefined }).promise;
+    if (token !== drawToken || signal.aborted) return;  // a newer draw (resize) superseded this one
+    fill(text, sheet);
+    await new pdfjsLib.TextLayer({ textContentSource: page.streamTextContent(), container: layer, viewport }).render();
+    if (token !== drawToken || signal.aborted) return;
+    markExisting();
   }
 
   // --- progress (shared by both layouts)
@@ -884,6 +994,13 @@ async function renderRead(docId, chapterPart, params) {
     const top = stage.getBoundingClientRect().top + window.scrollY;
     const height = Math.max(240, window.innerHeight - top - pagerHeight);
     const width = stage.clientWidth;
+    if (isPdf) {  // one fixed page, scaled to fit
+      stage.style.height = `${height}px`;
+      pages = 1;
+      step = width;
+      laidOut = true;
+      return;
+    }
     const spread = width >= 900;  // two pages side by side, like an open book
     const gap = spread ? 72 : 40;
     stage.style.height = `${height}px`;
@@ -901,7 +1018,7 @@ async function renderRead(docId, chapterPart, params) {
     page = Math.min(Math.max(0, n), pages - 1);
     text.style.transition = animate ? '' : 'none';
     text.style.transform = `translateX(${-page * step}px)`;
-    pageLabel.textContent = `Page ${page + 1} of ${pages}`;
+    pageLabel.textContent = isPdf ? `Page ${chapter + 1} of ${doc.chapters}` : `Page ${page + 1} of ${pages}`;
     leftLabel.textContent = pagesLeftText();
     updateBookmarkUI();
     prevPageButton.disabled = page === 0 && chapter === 0;
@@ -922,6 +1039,10 @@ async function renderRead(docId, chapterPart, params) {
     return perLine * lines * (text.classList.contains('spread') ? 2 : 1);
   }
   function pagesLeftText() {
+    if (isPdf) {
+      const left = doc.chapters - 1 - chapter;
+      return [left ? `${left.toLocaleString()} ${left === 1 ? 'page' : 'pages'} left` : 'Last page', doc.chapter_titles[chapter]].filter(Boolean).join(' · ');
+    }
     const inChapter = pages - 1 - page;
     const chapterPart = inChapter === 0 ? 'Last page in chapter' : `${inChapter} ${inChapter === 1 ? 'page' : 'pages'} left in chapter`;
     if (!doc.chapter_chars) return chapterPart;
@@ -1001,6 +1122,10 @@ async function renderRead(docId, chapterPart, params) {
   }
   // The first words you can see, so a bookmark reads like "I took the long way back…".
   function visibleSnippet() {
+    if (isPdf) {
+      const words = (text.querySelector('.textLayer')?.textContent || '').replace(/\s+/g, ' ').trim();
+      return words.length > 90 ? `${words.slice(0, 90).replace(/\s+\S*$/, '')}…` : words || `Page ${chapter + 1}`;
+    }
     const area = paged ? stage.getBoundingClientRect() : { left: 0, right: window.innerWidth, top: 120, bottom: window.innerHeight };
     for (const block of text.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, blockquote, figcaption, dt, dd, td, pre')) {
       const r = block.getBoundingClientRect();
@@ -1028,6 +1153,11 @@ async function renderRead(docId, chapterPart, params) {
   }
 
   function relayout() {
+    if (isPdf) {
+      if (paged) layoutPages();
+      drawPdfPage();
+      return;
+    }
     const keep = pagePosition();
     layoutPages();
     showPage(Math.round(keep * (pages - 1)), false);
@@ -1083,6 +1213,10 @@ async function renderRead(docId, chapterPart, params) {
     text.addEventListener('load', () => { if (laidOut) relayout(); }, { signal, capture: true });
   } else {
     window.addEventListener('scroll', () => { showProgress(); hideToolbar(); saveSoon(); updateBookmarkUI(); }, { signal, passive: true });
+    if (isPdf) {
+      let resizeTimer;
+      window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(relayout, 150); }, { signal });
+    }
   }
 
   // --- selection toolbar (create highlight) and mark toolbar (note / remove)
@@ -1185,11 +1319,24 @@ async function renderRead(docId, chapterPart, params) {
     pendingPosition = targetPosition;
     go(targetChapter);
   };
-  const chapterLabel = (i) => `Ch. ${i + 1}${doc.chapter_titles[i] ? ` · ${doc.chapter_titles[i]}` : ''}`;
+  const chapterLabel = (i) => `${isPdf ? 'p.' : 'Ch.'} ${i + 1}${doc.chapter_titles[i] ? ` · ${doc.chapter_titles[i]}` : ''}`;
   async function showPanelTab(key) {
     currentTab = key;
     panelTabs.forEach((t) => t.setAttribute('aria-selected', String(t.dataset.tab === key)));
-    if (key === 'contents') { fill(panelBody, el('nav', {}, tocList)); return; }
+    if (key === 'contents') {
+      if (isPdf) {
+        // PDFs: jump to any page, plus the PDF's own outline if it has one.
+        const input = el('input', { type: 'number', min: 1, max: doc.chapters, value: chapter + 1, 'aria-label': 'Page number' });
+        const jump = el('form', {
+          class: 'page-jump',
+          onsubmit: (ev) => { ev.preventDefault(); const n = Math.min(doc.chapters, Math.max(1, Number(input.value) || 1)); tocPanel.hidden = true; go(n - 1); },
+        }, el('label', {}, 'Go to page'), input, el('span', { class: 'muted small' }, `of ${doc.chapters}`), el('button', { class: 'btn' }, 'Go'));
+        fill(panelBody, jump, doc.toc.length ? el('nav', {}, tocList) : el('p', { class: 'panel-empty' }, 'This PDF has no table of contents.'));
+        return;
+      }
+      fill(panelBody, el('nav', {}, tocList));
+      return;
+    }
     if (key === 'bookmarks') {
       fill(panelBody, bookmarks.length
         ? bookmarks.map((b) => el('div', { class: `panel-item${b.chapter === chapter ? ' current' : ''}` },
@@ -1260,11 +1407,11 @@ async function renderRead(docId, chapterPart, params) {
   }, label));
   const resize = (delta) => { prefs.size = Math.min(30, Math.max(14, prefs.size + delta)); applyPrefs(); syncSettings(); };
   const settingsPanel = el('div', { class: 'reader-panel settings-panel', hidden: true, 'aria-label': 'Reading settings' },
-    el('div', { class: 'setting' }, el('span', {}, 'Text size'),
+    isPdf ? null : el('div', { class: 'setting' }, el('span', {}, 'Text size'),
       el('div', { class: 'row' }, el('button', { class: 'btn', type: 'button', onclick: () => resize(-1), 'aria-label': 'Smaller text' }, 'A−'), sizeLabel,
         el('button', { class: 'btn', type: 'button', onclick: () => resize(1), 'aria-label': 'Larger text' }, 'A+'))),
     el('div', { class: 'setting' }, el('span', {}, 'Layout'), el('div', { class: 'row' }, layoutButtons)),
-    el('div', { class: 'setting' }, el('span', {}, 'Font'), el('div', { class: 'row' }, fontButtons)),
+    isPdf ? null : el('div', { class: 'setting' }, el('span', {}, 'Font'), el('div', { class: 'row' }, fontButtons)),
     el('div', { class: 'setting stacked' }, el('span', {}, 'Theme'), el('div', { class: 'themes' }, themeButtons)));
   syncSettings();
 
@@ -1291,14 +1438,15 @@ async function renderRead(docId, chapterPart, params) {
     else if (ev.key === 'b') toggleBookmark();
   }, { signal });
 
-  const chapterName = (i) => doc.chapter_titles[i] || `Section ${i + 1}`;
+  const chapterName = (i) => doc.chapter_titles[i] || `${isPdf ? 'Page' : 'Section'} ${i + 1}`;
   const navButton = (i, dir) => (i < 0 || i >= doc.chapters ? el('span') : el('a', { class: `chapter-link ${dir}`, href: `#/read/${doc.id}/${i}` },
     el('small', {}, dir === 'prev' ? '← Previous' : 'Next →'), el('span', {}, chapterName(i))));
 
   fill(view,
     el('div', { class: 'reader-bar' },
       el('a', { class: 'btn ghost', href: '#/reader', 'aria-label': 'Back to shelf' }, icon('back'), el('span', { class: 'hide-sm' }, 'Shelf')),
-      el('div', { class: 'reader-title' }, el('strong', {}, doc.title), el('span', {}, `${chapterName(chapter)} · ${chapter + 1} of ${doc.chapters}`)),
+      el('div', { class: 'reader-title' }, el('strong', {}, doc.title),
+        el('span', {}, isPdf ? [doc.chapter_titles[chapter], `Page ${chapter + 1} of ${doc.chapters}`].filter(Boolean).join(' · ') : `${chapterName(chapter)} · ${chapter + 1} of ${doc.chapters}`)),
       el('div', { class: 'row' },
         el('button', { class: 'btn ghost icon-only', type: 'button', title: 'Highlights in this book', 'aria-label': 'Highlights in this book', onclick: () => openPanel('highlights') }, icon('highlighter')),
         el('button', { class: 'btn ghost icon-only', type: 'button', title: 'Contents, bookmarks & highlights', 'aria-label': 'Contents', onclick: () => openPanel('contents') }, icon('toc')),
@@ -1329,6 +1477,17 @@ async function renderRead(docId, chapterPart, params) {
   };
 
   const placeStart = () => {
+    if (isPdf) {
+      if (paged) layoutPages();
+      drawPdfPage().then(() => {
+        const target = startTarget();
+        if (paged) showPage(0, false);
+        if (target) { if (!paged) target.scrollIntoView({ block: 'center' }); flash(target); } else if (!paged) window.scrollTo(0, 0);
+        showProgress();
+        updateBookmarkUI();
+      }).catch((e) => toast(`Couldn’t draw this page: ${e.message}`));
+      return;
+    }
     const target = startTarget();
     if (paged) {
       layoutPages();

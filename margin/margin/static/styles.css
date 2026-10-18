@@ -533,3 +533,39 @@ body.immersive .reader-bar .reader-progress { left: 0; right: 0; }
 body.immersive .toc-panel, body.immersive .settings-panel { top: 64px; }
 body.immersive:not(.paged) .reader-text { padding-top: 48px; }
 body.immersive .page-wrap { margin-top: 40px; }
+
+/* ---------- Reader: PDFs ---------- */
+.cover-wrap { position: relative; }
+.kind-badge {
+  position: absolute; left: 6px; bottom: 6px; font: 700 .65rem var(--sans); letter-spacing: .05em;
+  padding: 2px 6px; border-radius: 4px; background: rgba(0, 0, 0, .65); color: #fff;
+}
+.reader-text.pdf-text { display: flex; justify-content: center; align-items: flex-start; padding: 16px 0; }
+.page-stage .reader-text.pdf-text { height: 100%; padding: 0; align-items: center; columns: auto; }
+.pdf-page {
+  position: relative; flex: none; background: #fff; box-shadow: 0 2px 14px rgba(0, 0, 0, .14);
+  animation: pdf-in .25s ease;
+}
+@keyframes pdf-in { from { opacity: .35; } to { opacity: 1; } }
+.pdf-page canvas { display: block; }
+/* Text layer (from PDF.js's pdf_viewer.css): invisible text positioned over the page, so it can be selected. */
+.textLayer { position: absolute; text-align: initial; inset: 0; overflow: clip; opacity: 1; line-height: 1;
+  -webkit-text-size-adjust: none; text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0; caret-color: CanvasText; z-index: 0; }
+.textLayer :is(span, br) { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
+.textLayer > :not(.markedContent), .textLayer .markedContent span:not(.markedContent) { z-index: 1; }
+.textLayer span.markedContent { top: 0; height: 0; }
+.textLayer ::selection { background: rgba(0, 0, 255, .25); background: color-mix(in srgb, AccentColor, transparent 75%); }
+.textLayer br::selection { background: transparent; }
+.textLayer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: 0; cursor: default; user-select: none; }
+.textLayer.selecting .endOfContent { top: 0; }
+/* Highlights on a PDF: tinted boxes over the printed words. */
+.textLayer mark.hl-mark { color: transparent; background: rgba(255, 213, 0, .42); border-radius: 1px; padding: 0; mix-blend-mode: multiply; }
+.textLayer mark.hl-mark.has-note { background: rgba(255, 190, 0, .55); border-bottom: none; }
+/* Themes: dark inverts the page (as most PDF readers do), sepia warms it. */
+body.reading[data-reader-theme="dark"] .pdf-page { background: #16171b; }
+body.reading[data-reader-theme="dark"] .pdf-page canvas { filter: invert(.9) hue-rotate(180deg); }
+body.reading[data-reader-theme="dark"] .textLayer mark.hl-mark { background: rgba(255, 200, 0, .35); mix-blend-mode: screen; }
+body.reading[data-reader-theme="sepia"] .pdf-page canvas { filter: sepia(.35) brightness(.97); }
+.page-jump { display: flex; align-items: center; gap: 8px; padding: 10px; border-bottom: 1px solid var(--border); margin-bottom: 6px; font-size: .88rem; }
+.page-jump input { width: 72px; font: inherit; padding: 5px 8px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); color: var(--text); }
+.page-jump .btn { padding: 5px 12px; }

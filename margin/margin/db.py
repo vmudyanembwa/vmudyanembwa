@@ -132,6 +132,12 @@ class Store:
                         self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
                         log.info("database: added %s.%s", table, name)
 
+    @property
+    def lock(self) -> threading.RLock:
+        """Hold this around any use of the store from a multi-threaded caller (the web server):
+        one SQLite connection must not be used by two threads at once."""
+        return self._lock
+
     def today(self) -> date:
         return self._today()
 
@@ -323,6 +329,7 @@ class Store:
         chapters = max(1, info["chapters"])
         d["progress"] = round(min(1.0, (d["progress_chapter"] + d["progress_pos"]) / chapters), 4)
         d["chapter_chars"] = info.get("chapter_chars")  # None for books added before page estimates
+        d["kind"] = info.get("kind", "epub")
         d.update(chapters=info["chapters"], cover=info["cover"], toc=info["toc"],
                  chapter_titles=info["chapter_titles"], language=info.get("language", ""))
         return d
@@ -374,6 +381,20 @@ class Store:
                 info = json.loads(row["info"])
                 info[key] = value
                 self.conn.execute("UPDATE documents SET info = ? WHERE id = ?", (json.dumps(info), doc_id))
+
+    def update_document_meta(self, doc_id: int, meta: dict):
+        """Store details the browser worked out about a PDF (title, author, pages, outline)."""
+        with self._lock, self.conn:
+            row = self.conn.execute("SELECT info, title, author FROM documents WHERE id = ?", (doc_id,)).fetchone()
+            if not row:
+                return
+            info = json.loads(row["info"])
+            title = meta.get("title") or row["title"]
+            author = meta.get("author") or row["author"]
+            info.update(title=title, author=author, chapters=meta["chapters"], toc=meta["toc"],
+                        chapter_titles=meta["chapter_titles"])
+            self.conn.execute("UPDATE documents SET title = ?, author = ?, info = ? WHERE id = ?",
+                              (title, author, json.dumps(info), doc_id))
 
     def bookmarks(self, doc_id: int) -> list[dict]:
         rows = self.conn.execute("SELECT * FROM bookmarks WHERE doc_id = ? ORDER BY chapter, position",
