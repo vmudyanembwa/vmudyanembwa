@@ -352,13 +352,17 @@ dialog::backdrop { background: rgba(15, 18, 24, .45); backdrop-filter: blur(2px)
 .shelf-link .book-img, .shelf-link .cover { transition: transform .15s, box-shadow .15s; }
 .btn.remove-book { position: absolute; top: 6px; right: 6px; background: var(--surface); color: var(--text-2); opacity: 0; box-shadow: var(--shadow); }
 .shelf-item:hover .remove-book, .remove-book:focus-visible { opacity: 1; }
-.btn.book-categories { position: absolute; top: 6px; right: 46px; background: var(--surface); color: var(--text-2); opacity: 0; box-shadow: var(--shadow); }
-.shelf-item:hover .book-categories, .continue-wrap:hover .book-categories, .book-categories:focus-visible { opacity: 1; }
+.btn.book-categories { position: absolute; top: 6px; right: 6px; background: var(--surface); color: var(--text-2); box-shadow: var(--shadow); }
+.shelf-item .btn.remove-book { right: 46px; }  /* the always-visible tag button sits in the corner */
+@media (hover: none) { .btn.remove-book { opacity: 1; } }  /* touch screens can't hover to reveal it */
 .continue-wrap { position: relative; margin-bottom: 36px; }
 .continue-wrap .continue { margin-bottom: 0; }
 .continue-wrap .book-categories { top: 14px; right: 14px; }
 .continue-body .continue-cats { margin: -10px 0 16px; }
 .shelf-filter { margin-bottom: 26px; }
+.filter-sep { width: 1px; align-self: stretch; margin: 4px 6px; background: var(--border-strong); }
+.shelf-hint { margin: -14px 0 20px; }
+.shelf-hint .icon { width: 14px; height: 14px; vertical-align: -2px; }
 .shelf-count { font-weight: 400; margin-left: 10px; }
 .cat-list { display: grid; gap: 8px; max-height: 40vh; overflow: auto; }
 .cat-check { display: flex; align-items: center; gap: 10px; font-size: .95rem; cursor: pointer; }
@@ -476,7 +480,8 @@ mark.hl-mark.flash { animation: flash 1.6s ease 2; }
   .continue-body h2 { font-size: 1.25rem; }
   .shelf { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 22px 14px; }
   .btn.remove-book { opacity: 1; padding: 5px; }
-  .btn.book-categories { opacity: 1; padding: 5px; right: 40px; }
+  .btn.book-categories { padding: 5px; }
+  .shelf-item .btn.remove-book { right: 40px; }
   .reader-bar { gap: 4px; }
   .hide-sm { display: none; }
   .reader-text { padding-top: 20px; }
