@@ -360,7 +360,8 @@ dialog::backdrop { background: rgba(15, 18, 24, .45); backdrop-filter: blur(2px)
 .continue-wrap .book-categories { top: 14px; right: 14px; }
 .continue-body .continue-cats { margin: -10px 0 16px; }
 .shelf-filter { margin-bottom: 26px; }
-.shelf-hint { margin: -8px 0 20px; }
+.filter-sep { width: 1px; align-self: stretch; margin: 4px 6px; background: var(--border-strong); }
+.shelf-hint { margin: -14px 0 20px; }
 .shelf-hint .icon { width: 14px; height: 14px; vertical-align: -2px; }
 .shelf-count { font-weight: 400; margin-left: 10px; }
 .cat-list { display: grid; gap: 8px; max-height: 40vh; overflow: auto; }

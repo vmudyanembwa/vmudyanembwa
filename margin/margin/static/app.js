@@ -684,18 +684,21 @@ async function renderShelf(message) {
     onclick: () => editBookCategories(d, categories),
   }, icon('tag'));
 
-  // A filter that no longer exists (category deleted, last book removed) falls back to the whole shelf.
+  // Smart shelves fill themselves from reading progress; each only shows when it has books.
+  // A filter that no longer exists (category deleted, shelf emptied) falls back to the whole shelf.
+  const smart = SMART_SHELVES.map((sh) => ({ ...sh, books: docs.filter((d) => sh.test(d, categories)) })).filter((sh) => sh.books.length);
   let filter = shelfFilter();
-  const uncategorised = docs.filter((d) => !d.categories.length);
-  if (filter && !(filter === UNCATEGORISED ? categories.length && uncategorised.length : categories.some((c) => c.name === filter))) filter = '';
-  const setFilter = (name) => { saveShelfFilter(name); renderShelf(); };
-  const filterRow = categories.length ? el('div', { class: 'filter-row shelf-filter', role: 'group', 'aria-label': 'Categories' },
-    el('button', { class: 'tab', type: 'button', 'aria-pressed': String(!filter), onclick: () => setFilter('') }, 'All', el('span', { class: 'n' }, docs.length)),
-    categories.map((c) => el('button', { class: 'tab', type: 'button', 'aria-pressed': String(c.name === filter), onclick: () => setFilter(c.name === filter ? '' : c.name) },
-      c.name, el('span', { class: 'n' }, c.count))),
-    uncategorised.length ? el('button', { class: 'tab', type: 'button', 'aria-pressed': String(filter === UNCATEGORISED), onclick: () => setFilter(filter === UNCATEGORISED ? '' : UNCATEGORISED) },
-      'Uncategorised', el('span', { class: 'n' }, uncategorised.length)) : null,
-    el('button', { class: 'btn ghost', type: 'button', onclick: () => manageCategories(categories) }, icon('note'), 'Edit'))
+  if (filter && !smart.some((sh) => sh.key === filter) && !categories.some((c) => c.name === filter)) filter = '';
+  const setFilter = (name) => { saveShelfFilter(name === filter ? '' : name); renderShelf(); };
+  const chip = (key, label, count) => el('button', { class: 'tab', type: 'button', 'aria-pressed': String(key === filter), onclick: () => setFilter(key) },
+    label, el('span', { class: 'n' }, count));
+  const filterRow = el('div', { class: 'filter-row shelf-filter', role: 'group', 'aria-label': 'Shelves and categories' },
+    chip('', 'All', docs.length),
+    smart.map((sh) => chip(sh.key, sh.label, sh.books.length)),
+    categories.length ? el('span', { class: 'filter-sep', 'aria-hidden': 'true' }) : null,
+    categories.map((c) => chip(c.name, c.name, c.count)),
+    categories.length ? el('button', { class: 'btn ghost', type: 'button', onclick: () => manageCategories(categories) }, icon('note'), 'Edit') : null);
+  const hint = categories.length ? null
     : el('p', { class: 'small muted shelf-hint' }, 'Sort your books into categories with the ', icon('tag'), ' button on each cover.');
 
   const shelfGrid = (books) => el('div', { class: 'shelf' }, books.map((d) => el('div', { class: 'shelf-item' },
@@ -715,9 +718,10 @@ async function renderShelf(message) {
 
   if (filter) {
     // A category shows all of its books, most recently read first, without the "continue" card.
-    const books = filter === UNCATEGORISED ? uncategorised : docs.filter((d) => d.categories.includes(filter));
+    const shelf = smart.find((sh) => sh.key === filter);
+    const books = shelf ? shelf.books : docs.filter((d) => d.categories.includes(filter));
     fill(view, head, status, filterRow,
-      el('h2', { class: 'shelf-h' }, filter === UNCATEGORISED ? 'Uncategorised' : filter, el('span', { class: 'muted small shelf-count' }, plural(books.length, 'book'))),
+      el('h2', { class: 'shelf-h' }, shelf ? shelf.label : filter, el('span', { class: 'muted small shelf-count' }, plural(books.length, 'book'))),
       shelfGrid(books));
     return;
   }
@@ -735,7 +739,7 @@ async function renderShelf(message) {
         el('span', { class: 'btn primary' }, icon('books'), current.last_opened ? 'Continue' : 'Open book'))),
     categoriesButton(current));
 
-  fill(view, head, status, filterRow, continueCard,
+  fill(view, head, status, filterRow, hint, continueCard,
     rest.length ? el('h2', { class: 'shelf-h' }, 'Your shelf') : null,
     rest.length ? shelfGrid(rest) : null,
   );
@@ -743,7 +747,15 @@ async function renderShelf(message) {
 
 // ---------- Reader: book categories ----------
 
-const UNCATEGORISED = '\u0000uncategorised';  // can't clash with a real name: names are trimmed text
+// Keys start with a NUL so they can't clash with a category name (names are trimmed text).
+const FINISHED_AT = 0.98;  // the last page rarely reads as exactly 100%
+const SMART_SHELVES = [
+  { key: '\u0000reading', label: 'Reading', test: (d) => d.progress > 0 && d.progress < FINISHED_AT },
+  { key: '\u0000new', label: 'Not started', test: (d) => !d.progress },
+  { key: '\u0000finished', label: 'Finished', test: (d) => d.progress >= FINISHED_AT },
+  { key: '\u0000pdf', label: 'PDFs', test: (d) => d.kind === 'pdf' },
+  { key: '\u0000uncategorised', label: 'Uncategorised', test: (d, categories) => categories.length > 0 && !d.categories.length },
+];
 
 function shelfFilter() {
   try { return localStorage.getItem('margin-shelf-category') || ''; } catch { return ''; }
