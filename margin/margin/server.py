@@ -200,15 +200,47 @@ def make_handler(store, books_dir: Path | None = None):
     @route("GET", r"/api/docs/(\d+)")
     def doc_info(req, q, doc_id):
         doc = get_doc(doc_id)
-        if doc["chapter_chars"] is None and doc["kind"] == "epub":
-            # Books added before page estimates existed: measure once and remember.
+        if doc["kind"] == "epub" and (doc["chapter_chars"] is None or doc["subjects"] is None):
+            # Books added before page estimates / subjects existed: read them once and remember.
             try:
                 with epub.Book(book_path(doc)) as book:
-                    doc["chapter_chars"] = book.chapter_lengths()
-                store.set_document_info(doc["id"], "chapter_chars", doc["chapter_chars"])
+                    for key, value in (("chapter_chars", book.chapter_lengths), ("subjects", lambda: book.subjects)):
+                        if doc[key] is None:
+                            doc[key] = value()
+                            store.set_document_info(doc["id"], key, doc[key])
             except (ApiError, epub.EpubError):
                 pass
         return doc
+
+    @route("PUT", r"/api/docs/(\d+)/categories")
+    def doc_categories(req, q, doc_id):
+        names = req.json().get("categories")
+        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "categories must be a list of names")
+        result = store.set_document_categories(int(doc_id), names)
+        if result is None:
+            raise ApiError(HTTPStatus.NOT_FOUND, "book not found")
+        return {"categories": result}
+
+    @route("GET", "/api/categories")
+    def list_categories(req, q):
+        return store.categories()
+
+    @route("PATCH", r"/api/categories/(\d+)")
+    def rename_category(req, q, category_id):
+        try:
+            result = store.rename_category(int(category_id), str(req.json().get("name", "")))
+        except ValueError as e:
+            raise ApiError(HTTPStatus.BAD_REQUEST, str(e))
+        if result is None:
+            raise ApiError(HTTPStatus.NOT_FOUND, "category not found")
+        return result
+
+    @route("DELETE", r"/api/categories/(\d+)")
+    def delete_category(req, q, category_id):
+        if not store.delete_category(int(category_id)):
+            raise ApiError(HTTPStatus.NOT_FOUND, "category not found")
+        return {"deleted": True}
 
     @route("GET", r"/api/docs/(\d+)/bookmarks")
     def list_bookmarks(req, q, doc_id):

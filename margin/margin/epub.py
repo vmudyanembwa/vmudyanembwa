@@ -51,6 +51,26 @@ def read_bytes(path: Path) -> bytes:
     return path.read_bytes()
 
 
+def clean_subjects(raw, limit: int = 5) -> list[str]:
+    """Turn dc:subject entries into short category suggestions.
+
+    Publishers often write BISAC codes ("FIC019000") or paths ("Fiction / Literary"); codes are
+    dropped and paths split, so "Fiction / Literary" suggests both "Fiction" and "Literary".
+    """
+    seen, out = set(), []
+    for entry in raw:
+        for part in re.split(r"\s*(?:/|--|;|>)\s*", (entry or "").strip()):
+            part = re.sub(r"\s+", " ", part).strip(" .,")
+            if not part or len(part) > 40 or re.fullmatch(r"[A-Z]{2,4}\d{3,}|[\d.\s]+", part):
+                continue
+            if part.lower() in ("general", "fiction & related items"):
+                continue
+            if part.lower() not in seen:
+                seen.add(part.lower())
+                out.append(part[0].upper() + part[1:])
+    return out[:limit]
+
+
 def content_hash(data: bytes) -> str:
     return hashlib.sha1(data).hexdigest()
 
@@ -120,6 +140,7 @@ class Book:
         creators = [c.text.strip() for c in md.findall("dc:creator", NS) if c.text] if md is not None else []
         self.author = ", ".join(creators)
         self.language = text("dc:language")
+        self.subjects = clean_subjects(e.text for e in md.findall("dc:subject", NS)) if md is not None else []
 
         self.manifest = {}  # id -> {href(path in zip), type, properties}
         for item in opf.findall("opf:manifest/opf:item", NS):
@@ -269,7 +290,7 @@ class Book:
     def info(self) -> dict:
         return {"title": self.title, "author": self.author, "language": self.language, "cover": self.cover,
                 "chapters": len(self.spine), "toc": self.toc, "chapter_titles": self.chapter_titles,
-                "chapter_chars": self.chapter_lengths()}
+                "chapter_chars": self.chapter_lengths(), "subjects": self.subjects}
 
 
 # ---------- Sanitiser ----------

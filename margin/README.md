@@ -67,10 +67,12 @@ Add books from the **Reader** page (button, or drop files anywhere on it), the *
 ```sh
 python3 -m margin import-books ~/Books               # every .epub and .pdf in a folder (searched recursively)
 python3 -m margin import-epub "~/Downloads/Some Book.epub"
+python3 -m margin import-books ~/Books/Work --category Work   # also file them under a category (repeatable)
 ```
 
 Books are copied to `~/.margin/books/`; adding the same file twice does nothing. Removing a book from the shelf keeps its highlights.
 
+- **Categories:** hover a book on the shelf and click the tag icon to put it in one or more categories (e.g. Fiction, Work, To read). For EPUBs, the subjects the publisher put in the book are offered as one-click suggestions; they're never added automatically. Once you have a category, chips above the shelf filter it (plus **Uncategorised**), and Margin remembers your last choice. **Edit** renames or deletes categories; renaming one to an existing name merges them, and deleting one never removes its books.
 - **Turning pages:** by default books are laid out as pages (two side by side on a wide screen) that you flip with `←`/`→` or Space, by clicking the left/right edge, swiping on a trackpad or touchscreen, or with the arrows at the bottom. Prefer one long column? Switch **Layout** to **Scroll** under **T**.
 - **Full screen:** the full-screen button (or `F`) hides everything but the book; the toolbar tucks away and comes back when you move the mouse or tap the middle of the page. `Esc` or `F` exits. It stays full screen as you move between chapters.
 - **Bookmarks & pages left:** tap the bookmark icon (or press `B`) to bookmark a page; a ribbon marks it. The list icon opens **Contents / Bookmarks / Highlights** for the book. The bottom bar shows pages left in the chapter and an estimate for the whole book (worked out from each chapter's length and how much text fits on your page, so it adjusts to text size and window).

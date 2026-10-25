@@ -86,6 +86,19 @@ CREATE TABLE IF NOT EXISTS bookmarks (
 CREATE INDEX IF NOT EXISTS bookmarks_doc ON bookmarks(doc_id, chapter);
 """
 
+SCHEMA += """
+CREATE TABLE IF NOT EXISTS categories (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE
+);
+CREATE TABLE IF NOT EXISTS document_categories (
+    doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+    PRIMARY KEY (doc_id, category_id)
+);
+CREATE INDEX IF NOT EXISTS document_categories_cat ON document_categories(category_id);
+"""
+
 # Columns added after the first release; created on startup if an older database lacks them.
 MIGRATIONS = {
     "highlights": [
@@ -331,17 +344,28 @@ class Store:
         d["chapter_chars"] = info.get("chapter_chars")  # None for books added before page estimates
         d["kind"] = info.get("kind", "epub")
         d.update(chapters=info["chapters"], cover=info["cover"], toc=info["toc"],
-                 chapter_titles=info["chapter_titles"], language=info.get("language", ""))
+                 chapter_titles=info["chapter_titles"], language=info.get("language", ""),
+                 subjects=info.get("subjects"))  # None for books added before subjects were read
         return d
+
+    def _categories_by_doc(self, doc_id: int | None = None) -> dict[int, list[str]]:
+        sql = ("SELECT dc.doc_id, c.name FROM document_categories dc JOIN categories c ON c.id = dc.category_id"
+               + (" WHERE dc.doc_id = ?" if doc_id is not None else "") + " ORDER BY c.name COLLATE NOCASE")
+        out: dict[int, list[str]] = {}
+        for r in self.conn.execute(sql, () if doc_id is None else (doc_id,)):
+            out.setdefault(r["doc_id"], []).append(r["name"])
+        return out
 
     def documents(self) -> list[dict]:
         rows = self.conn.execute(
             "SELECT * FROM documents ORDER BY COALESCE(last_opened, added_at) DESC, id DESC").fetchall()
+        cats = self._categories_by_doc()
         out = []
         for r in rows:
             d = self._document(r)
             for key in ("toc", "chapter_titles"):
                 d.pop(key)
+            d["categories"] = cats.get(d["id"], [])
             out.append(d)
         return out
 
@@ -355,6 +379,7 @@ class Store:
         d["source_id"] = src["id"] if src else None
         d["highlight_count"] = self.conn.execute(
             "SELECT COUNT(*) FROM highlights WHERE doc_id = ?", (doc_id,)).fetchone()[0]
+        d["categories"] = self._categories_by_doc(doc_id).get(doc_id, [])
         return d
 
     def set_progress(self, doc_id: int, chapter: int, position: float) -> bool:
@@ -395,6 +420,58 @@ class Store:
                         chapter_titles=meta["chapter_titles"])
             self.conn.execute("UPDATE documents SET title = ?, author = ?, info = ? WHERE id = ?",
                               (title, author, json.dumps(info), doc_id))
+
+    # ---------- book categories ----------
+
+    def categories(self) -> list[dict]:
+        """Every category with how many books are in it, A to Z. Empty categories are kept."""
+        rows = self.conn.execute(
+            "SELECT c.id, c.name, COUNT(dc.doc_id) AS count FROM categories c "
+            "LEFT JOIN document_categories dc ON dc.category_id = c.id "
+            "GROUP BY c.id ORDER BY c.name COLLATE NOCASE").fetchall()
+        return [dict(r) for r in rows]
+
+    def _category_id(self, name: str) -> int:
+        self.conn.execute("INSERT OR IGNORE INTO categories(name) VALUES (?)", (name,))
+        return self.conn.execute("SELECT id FROM categories WHERE name = ?", (name,)).fetchone()["id"]
+
+    def set_document_categories(self, doc_id: int, names, replace: bool = True) -> list[str] | None:
+        """Put a book in these categories (created as needed). replace=False adds to the ones it has.
+        Returns the book's categories afterwards, or None if there's no such book."""
+        with self._lock, self.conn:
+            if not self.conn.execute("SELECT 1 FROM documents WHERE id = ?", (doc_id,)).fetchone():
+                return None
+            if replace:
+                self.conn.execute("DELETE FROM document_categories WHERE doc_id = ?", (doc_id,))
+            for name in clean_tags(names):
+                self.conn.execute("INSERT OR IGNORE INTO document_categories(doc_id, category_id) VALUES (?, ?)",
+                                  (doc_id, self._category_id(name)))
+        return self._categories_by_doc(doc_id).get(doc_id, [])
+
+    def rename_category(self, category_id: int, name: str) -> dict | None:
+        """Rename a category. Renaming onto another category's name merges the two."""
+        [name] = clean_tags([name]) or [""]
+        if not name:
+            raise ValueError("category name can't be empty")
+        with self._lock, self.conn:
+            if not self.conn.execute("SELECT 1 FROM categories WHERE id = ?", (category_id,)).fetchone():
+                return None
+            other = self.conn.execute("SELECT id FROM categories WHERE name = ? AND id != ?",
+                                      (name, category_id)).fetchone()
+            if other:
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO document_categories(doc_id, category_id) "
+                    "SELECT doc_id, ? FROM document_categories WHERE category_id = ?", (other["id"], category_id))
+                self.conn.execute("DELETE FROM categories WHERE id = ?", (category_id,))
+                category_id = other["id"]
+            self.conn.execute("UPDATE categories SET name = ? WHERE id = ?", (name, category_id))
+        return next(c for c in self.categories() if c["id"] == category_id)
+
+    def delete_category(self, category_id: int) -> bool:
+        """Remove a category; its books stay on the shelf."""
+        with self._lock, self.conn:
+            cur = self.conn.execute("DELETE FROM categories WHERE id = ?", (category_id,))
+        return cur.rowcount > 0
 
     def bookmarks(self, doc_id: int) -> list[dict]:
         rows = self.conn.execute("SELECT * FROM bookmarks WHERE doc_id = ? ORDER BY chapter, position",
