@@ -352,6 +352,24 @@ dialog::backdrop { background: rgba(15, 18, 24, .45); backdrop-filter: blur(2px)
 .shelf-link .book-img, .shelf-link .cover { transition: transform .15s, box-shadow .15s; }
 .btn.remove-book { position: absolute; top: 6px; right: 6px; background: var(--surface); color: var(--text-2); opacity: 0; box-shadow: var(--shadow); }
 .shelf-item:hover .remove-book, .remove-book:focus-visible { opacity: 1; }
+.btn.book-categories { position: absolute; top: 6px; right: 46px; background: var(--surface); color: var(--text-2); opacity: 0; box-shadow: var(--shadow); }
+.shelf-item:hover .book-categories, .continue-wrap:hover .book-categories, .book-categories:focus-visible { opacity: 1; }
+.continue-wrap { position: relative; margin-bottom: 36px; }
+.continue-wrap .continue { margin-bottom: 0; }
+.continue-wrap .book-categories { top: 14px; right: 14px; }
+.continue-body .continue-cats { margin: -10px 0 16px; }
+.shelf-filter { margin-bottom: 26px; }
+.shelf-count { font-weight: 400; margin-left: 10px; }
+.cat-list { display: grid; gap: 8px; max-height: 40vh; overflow: auto; }
+.cat-check { display: flex; align-items: center; gap: 10px; font-size: .95rem; cursor: pointer; }
+.cat-check input { width: 18px; height: 18px; accent-color: var(--accent); }
+.cat-suggest { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.cat-suggest:empty { display: none; }
+.cat-suggest .tab .icon { width: 14px; height: 14px; margin-right: 2px; }
+.row.nowrap { flex-wrap: nowrap; }
+.row.nowrap input { flex: 1; min-width: 0; }
+.cat-row { display: grid; grid-template-columns: 1fr 64px auto; gap: 10px; align-items: center; }
+.cat-row input, .row.nowrap input { font: inherit; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--text); }
 
 /* ---------- Reader: reading view ---------- */
 body.reading { --r-bg: #ffffff; --r-text: #1c1d21; --r-muted: #6b7180; --r-border: #e7e8ec; --r-mark: #ffe58a; --r-mark-note: #ffd24d; }
@@ -458,6 +476,7 @@ mark.hl-mark.flash { animation: flash 1.6s ease 2; }
   .continue-body h2 { font-size: 1.25rem; }
   .shelf { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 22px 14px; }
   .btn.remove-book { opacity: 1; padding: 5px; }
+  .btn.book-categories { opacity: 1; padding: 5px; right: 40px; }
   .reader-bar { gap: 4px; }
   .hide-sm { display: none; }
   .reader-text { padding-top: 20px; }

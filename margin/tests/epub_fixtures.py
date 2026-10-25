@@ -51,7 +51,7 @@ While thou livest, while it is in thy power, be good.</p>
 
 def make_epub(version: int = 3, drm: str = "", title: str = "Meditations",
               author: str = "Marcus Aurelius", chapters=CHAPTERS, clean: bool = False,
-              cover_svg: str = "") -> bytes:
+              cover_svg: str = "", subjects=()) -> bytes:
     """clean=True leaves out the hostile test content (scripts, an SVG with script), for the sample book."""
     page = XHTML if not clean else XHTML.replace("<style>p {{ color: red }}</style><script>alert('head')</script>", "")
     buf = io.BytesIO()
@@ -117,7 +117,7 @@ def make_epub(version: int = 3, drm: str = "", title: str = "Meditations",
 <package xmlns="http://www.idpf.org/2007/opf" version="{version}.0" unique-identifier="id">
 <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
 <dc:identifier id="id">urn:uuid:margin-test-{title}</dc:identifier>
-<dc:title>{title}</dc:title><dc:creator>{author}</dc:creator><dc:language>en</dc:language>{meta_cover}
+<dc:title>{title}</dc:title><dc:creator>{author}</dc:creator><dc:language>en</dc:language>{meta_cover}{"".join(f"<dc:subject>{x}</dc:subject>" for x in subjects)}
 </metadata>
 <manifest>{''.join(items)}</manifest>
 <spine{toc_attr}><itemref idref="cover"/>{''.join(spine)}</spine>

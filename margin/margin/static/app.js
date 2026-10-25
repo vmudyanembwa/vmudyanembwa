@@ -643,7 +643,7 @@ function bookCover(doc, size = 'shelf') {
 }
 
 async function renderShelf(message) {
-  const docs = await api('docs');
+  const [docs, categories] = await Promise.all([api('docs'), api('categories')]);
   const status = statusLine();
   if (message) status.set(...message);
   const input = el('input', { type: 'file', accept: '.epub,.pdf,application/epub+zip,application/pdf', multiple: true, hidden: true });
@@ -677,34 +677,183 @@ async function renderShelf(message) {
     return;
   }
 
-  const [current, ...rest] = docs;
   const pct = (d) => Math.round(d.progress * 100);
   const progressBar = (d) => { const i = el('i'); i.style.width = `${pct(d)}%`; return el('div', { class: 'progress' }, i); };
-  const continueCard = el('a', { class: 'card continue', href: `#/read/${current.id}` },
-    bookCover(current, 'shelf'),
-    el('div', { class: 'continue-body' },
-      el('span', { class: 'eyebrow' }, current.last_opened ? 'Continue reading' : 'Start reading', current.kind === 'pdf' ? ' · PDF' : ''),
-      el('h2', {}, current.title),
-      current.author ? el('p', { class: 'muted' }, current.author) : null,
-      el('div', { class: 'continue-progress' }, progressBar(current), el('span', { class: 'small muted' }, `${pct(current)}%`)),
-      el('span', { class: 'btn primary' }, icon('books'), current.last_opened ? 'Continue' : 'Open book')));
+  const categoriesButton = (d) => el('button', {
+    class: 'btn ghost icon-only book-categories', type: 'button', title: `Categories for ${d.title}`, 'aria-label': `Categories for ${d.title}`,
+    onclick: () => editBookCategories(d, categories),
+  }, icon('tag'));
 
-  fill(view, head, status, continueCard,
+  // A filter that no longer exists (category deleted, last book removed) falls back to the whole shelf.
+  let filter = shelfFilter();
+  const uncategorised = docs.filter((d) => !d.categories.length);
+  if (filter && !(filter === UNCATEGORISED ? categories.length && uncategorised.length : categories.some((c) => c.name === filter))) filter = '';
+  const setFilter = (name) => { saveShelfFilter(name); renderShelf(); };
+  const filterRow = categories.length ? el('div', { class: 'filter-row shelf-filter', role: 'group', 'aria-label': 'Categories' },
+    el('button', { class: 'tab', type: 'button', 'aria-pressed': String(!filter), onclick: () => setFilter('') }, 'All', el('span', { class: 'n' }, docs.length)),
+    categories.map((c) => el('button', { class: 'tab', type: 'button', 'aria-pressed': String(c.name === filter), onclick: () => setFilter(c.name === filter ? '' : c.name) },
+      c.name, el('span', { class: 'n' }, c.count))),
+    uncategorised.length ? el('button', { class: 'tab', type: 'button', 'aria-pressed': String(filter === UNCATEGORISED), onclick: () => setFilter(filter === UNCATEGORISED ? '' : UNCATEGORISED) },
+      'Uncategorised', el('span', { class: 'n' }, uncategorised.length)) : null,
+    el('button', { class: 'btn ghost', type: 'button', onclick: () => manageCategories(categories) }, icon('note'), 'Edit')) : null;
+
+  const shelfGrid = (books) => el('div', { class: 'shelf' }, books.map((d) => el('div', { class: 'shelf-item' },
+    el('a', { href: `#/read/${d.id}`, class: 'shelf-link' },
+      el('div', { class: 'cover-wrap' }, bookCover(d, 'shelf'), d.kind === 'pdf' ? el('span', { class: 'kind-badge' }, 'PDF') : null),
+      el('strong', {}, d.title),
+      d.author ? el('span', { class: 'muted small' }, d.author) : null,
+      el('div', { class: 'shelf-progress' }, progressBar(d), el('span', { class: 'small muted' }, d.progress ? `${pct(d)}%` : 'New'))),
+    categoriesButton(d),
+    el('button', {
+      class: 'btn ghost icon-only remove-book', type: 'button', title: `Remove ${d.title}`, 'aria-label': `Remove ${d.title}`,
+      onclick: async () => {
+        if (!confirm(`Remove “${d.title}” from your Reader? Your highlights from it stay in your library.`)) return;
+        try { await api(`docs/${d.id}`, { method: 'DELETE' }); toast('Book removed'); renderShelf(); } catch (e) { toast(e.message); }
+      },
+    }, icon('trash')))));
+
+  if (filter) {
+    // A category shows all of its books, most recently read first, without the "continue" card.
+    const books = filter === UNCATEGORISED ? uncategorised : docs.filter((d) => d.categories.includes(filter));
+    fill(view, head, status, filterRow,
+      el('h2', { class: 'shelf-h' }, filter === UNCATEGORISED ? 'Uncategorised' : filter, el('span', { class: 'muted small shelf-count' }, plural(books.length, 'book'))),
+      shelfGrid(books));
+    return;
+  }
+
+  const [current, ...rest] = docs;
+  const continueCard = el('div', { class: 'continue-wrap' },
+    el('a', { class: 'card continue', href: `#/read/${current.id}` },
+      bookCover(current, 'shelf'),
+      el('div', { class: 'continue-body' },
+        el('span', { class: 'eyebrow' }, current.last_opened ? 'Continue reading' : 'Start reading', current.kind === 'pdf' ? ' · PDF' : ''),
+        el('h2', {}, current.title),
+        current.author ? el('p', { class: 'muted' }, current.author) : null,
+        current.categories.length ? el('p', { class: 'small muted continue-cats' }, current.categories.join(' · ')) : null,
+        el('div', { class: 'continue-progress' }, progressBar(current), el('span', { class: 'small muted' }, `${pct(current)}%`)),
+        el('span', { class: 'btn primary' }, icon('books'), current.last_opened ? 'Continue' : 'Open book'))),
+    categoriesButton(current));
+
+  fill(view, head, status, filterRow, continueCard,
     rest.length ? el('h2', { class: 'shelf-h' }, 'Your shelf') : null,
-    rest.length ? el('div', { class: 'shelf' }, rest.map((d) => el('div', { class: 'shelf-item' },
-      el('a', { href: `#/read/${d.id}`, class: 'shelf-link' },
-        el('div', { class: 'cover-wrap' }, bookCover(d, 'shelf'), d.kind === 'pdf' ? el('span', { class: 'kind-badge' }, 'PDF') : null),
-        el('strong', {}, d.title),
-        d.author ? el('span', { class: 'muted small' }, d.author) : null,
-        el('div', { class: 'shelf-progress' }, progressBar(d), el('span', { class: 'small muted' }, d.progress ? `${pct(d)}%` : 'New'))),
-      el('button', {
-        class: 'btn ghost icon-only remove-book', type: 'button', title: `Remove ${d.title}`, 'aria-label': `Remove ${d.title}`,
-        onclick: async () => {
-          if (!confirm(`Remove “${d.title}” from your Reader? Your highlights from it stay in your library.`)) return;
-          try { await api(`docs/${d.id}`, { method: 'DELETE' }); toast('Book removed'); renderShelf(); } catch (e) { toast(e.message); }
-        },
-      }, icon('trash'))))) : null,
+    rest.length ? shelfGrid(rest) : null,
   );
+}
+
+// ---------- Reader: book categories ----------
+
+const UNCATEGORISED = '\u0000uncategorised';  // can't clash with a real name: names are trimmed text
+
+function shelfFilter() {
+  try { return localStorage.getItem('margin-shelf-category') || ''; } catch { return ''; }
+}
+
+function saveShelfFilter(name) {
+  try { localStorage.setItem('margin-shelf-category', name); } catch { /* private mode: just don't remember */ }
+}
+
+/** A throwaway <dialog>: built, shown, and removed from the page when it closes. */
+function openDialog(title, ...content) {
+  const form = el('form', { method: 'dialog', class: 'dialog-body' }, el('h2', {}, title), ...content);
+  const dialog = el('dialog', { 'aria-label': title }, form);
+  document.body.append(dialog);
+  dialog.addEventListener('close', () => dialog.remove());
+  dialog.showModal();
+  return { dialog, form };
+}
+
+async function editBookCategories(doc, categories) {
+  const chosen = new Map(doc.categories.map((n) => [n.toLowerCase(), n]));
+  const names = [...categories.map((c) => c.name)];
+  const list = el('div', { class: 'cat-list' });
+  const suggestions = el('div', { class: 'cat-suggest' });
+  const drawList = () => fill(list, names.length ? names.map((n) => el('label', { class: 'cat-check' },
+    el('input', {
+      type: 'checkbox', checked: chosen.has(n.toLowerCase()),
+      onchange: (ev) => { if (ev.target.checked) chosen.set(n.toLowerCase(), n); else chosen.delete(n.toLowerCase()); drawSuggestions(); },
+    }), el('span', {}, n))) : el('p', { class: 'small muted', style: 'margin:0' }, 'No categories yet. Add your first one below.'));
+  const add = (raw) => {
+    const n = raw.trim();
+    if (!n) return;
+    const existing = names.find((x) => x.toLowerCase() === n.toLowerCase());
+    if (!existing) names.push(n);
+    chosen.set(n.toLowerCase(), existing || n);
+    drawList();
+    drawSuggestions();
+  };
+  let subjects = doc.subjects || [];
+  const drawSuggestions = () => {
+    const left = subjects.filter((s) => !chosen.has(s.toLowerCase()));
+    fill(suggestions, left.length ? el('span', { class: 'small muted' }, 'Suggested from the book:') : null,
+      left.map((s) => el('button', { class: 'tab', type: 'button', title: `Add “${s}”`, onclick: () => add(s) }, icon('plus'), s)));
+  };
+  const input = el('input', { type: 'text', autocomplete: 'off', placeholder: 'e.g. Fiction, Work, To read', maxlength: '60' });
+  input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); add(input.value); input.value = ''; } });
+  drawList();
+  drawSuggestions();
+
+  const { dialog } = openDialog('Categories',
+    el('p', { class: 'muted', style: 'margin:0' }, doc.title),
+    list, suggestions,
+    el('div', { class: 'field' }, el('span', {}, 'New category'),
+      el('div', { class: 'row nowrap' }, input, el('button', { class: 'btn', type: 'button', onclick: () => { add(input.value); input.value = ''; input.focus(); } }, icon('plus'), 'Add'))),
+    el('div', { class: 'row end' },
+      el('button', { value: 'cancel', class: 'btn', formnovalidate: true }, 'Cancel'),
+      el('button', { value: 'save', class: 'btn primary' }, 'Save')));
+  dialog.addEventListener('close', async () => {
+    if (dialog.returnValue !== 'save') return;
+    if (input.value.trim()) add(input.value);  // typed a name but pressed Save instead of Add
+    try {
+      await api(`docs/${doc.id}/categories`, { method: 'PUT', body: { categories: [...chosen.values()] } });
+      toast('Categories saved');
+      renderShelf();
+    } catch (e) { toast(e.message); }
+  });
+
+  // Books imported before subjects were read: the book page fills them in the first time it's asked.
+  if (doc.subjects == null && doc.kind === 'epub') {
+    try { subjects = (await api(`docs/${doc.id}`)).subjects || []; drawSuggestions(); } catch { /* suggestions are optional */ }
+  }
+}
+
+function manageCategories(categories) {
+  let changed = false;
+  let pending = Promise.resolve();  // renames and deletes, in order, so "Done" can wait for them
+  const rows = categories.map((c) => {
+    const input = el('input', { type: 'text', value: c.name, 'aria-label': `Rename ${c.name}`, maxlength: '60' });
+    const save = async () => {
+      const name = input.value.trim();
+      if (!name || name === c.name) { input.value = c.name; return; }
+      try {
+        const renamed = (await api(`categories/${c.id}`, { method: 'PATCH', body: { name } })).name;
+        if (shelfFilter() === c.name) saveShelfFilter(renamed);  // keep showing the same books
+        c.name = renamed;
+        input.value = renamed;
+        changed = true;
+      } catch (e) { toast(e.message); }
+    };
+    input.addEventListener('change', () => { pending = pending.then(save); });
+    input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); } });
+    const row = el('div', { class: 'cat-row' }, input, el('span', { class: 'small muted' }, plural(c.count, 'book')),
+      el('button', {
+        class: 'btn ghost icon-only danger', type: 'button', title: `Delete ${c.name}`, 'aria-label': `Delete ${c.name}`,
+        onclick: async () => {
+          if (!confirm(`Delete the category “${c.name}”? Its books stay on your shelf.`)) return;
+          pending = pending.then(async () => {
+            try { await api(`categories/${c.id}`, { method: 'DELETE' }); row.remove(); changed = true; } catch (e) { toast(e.message); }
+          });
+        },
+      }, icon('trash')));
+    return row;
+  });
+  const { dialog } = openDialog('Edit categories',
+    el('p', { class: 'small muted', style: 'margin:0' }, 'Rename a category to an existing name to merge the two.'),
+    el('div', { class: 'cat-list' }, rows),
+    el('div', { class: 'row end' }, el('button', { value: 'done', class: 'btn primary' }, 'Done')));
+  dialog.addEventListener('close', async () => {
+    await pending;
+    if (changed) renderShelf();
+  });
 }
 
 // ---------- Reader: PDF support (PDF.js, loaded only when a PDF is opened) ----------
