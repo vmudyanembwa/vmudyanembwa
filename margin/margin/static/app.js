@@ -695,7 +695,8 @@ async function renderShelf(message) {
       c.name, el('span', { class: 'n' }, c.count))),
     uncategorised.length ? el('button', { class: 'tab', type: 'button', 'aria-pressed': String(filter === UNCATEGORISED), onclick: () => setFilter(filter === UNCATEGORISED ? '' : UNCATEGORISED) },
       'Uncategorised', el('span', { class: 'n' }, uncategorised.length)) : null,
-    el('button', { class: 'btn ghost', type: 'button', onclick: () => manageCategories(categories) }, icon('note'), 'Edit')) : null;
+    el('button', { class: 'btn ghost', type: 'button', onclick: () => manageCategories(categories) }, icon('note'), 'Edit'))
+    : el('p', { class: 'small muted shelf-hint' }, 'Sort your books into categories with the ', icon('tag'), ' button on each cover.');
 
   const shelfGrid = (books) => el('div', { class: 'shelf' }, books.map((d) => el('div', { class: 'shelf-item' },
     el('a', { href: `#/read/${d.id}`, class: 'shelf-link' },
