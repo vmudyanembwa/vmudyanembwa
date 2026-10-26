@@ -287,6 +287,53 @@ class Book:
                 lengths.append(0)
         return lengths
 
+    def chapter_text(self, index: int) -> str:
+        """Plain text of a chapter, with a line break between blocks so words never run together."""
+        def walk(nodes, out):
+            for n in nodes:
+                if isinstance(n, str):
+                    out.append(n)
+                else:
+                    walk(n["c"], out)
+                    if n["t"] not in INLINE:
+                        out.append("\n")
+            return out
+        return "".join(walk(self.chapter(index), []))
+
+    def search(self, query: str, limit: int = 200) -> list[dict]:
+        """Matches for `query` (case-insensitive, whitespace-tolerant) across the book, in reading order.
+
+        `hit` numbers the matches within a chapter, so the reader can find the same one in the page."""
+        letters = re.sub(r"\s+", "", query)
+        if not letters:
+            return []
+        pattern = re.compile(r"\s*".join(re.escape(c) for c in letters), re.IGNORECASE)
+        results = []
+        for i in range(len(self.spine)):
+            try:
+                text = self.chapter_text(i)
+            except (KeyError, EpubError):
+                continue
+            for hit, m in enumerate(pattern.finditer(text)):
+                # A little context either side, trimmed to whole words.
+                start, end = max(0, m.start() - 60), m.end() + 80
+                before = text[start:m.start()]
+                after = text[m.end():end]
+                if start > 0:
+                    before = before.split(None, 1)[-1] if " " in before.strip() else before
+                if end < len(text):
+                    after = after.rsplit(None, 1)[0] if " " in after.strip() else after
+                before, after = " ".join(before.split()), " ".join(after.split())
+                if m.start() > 0 and text[m.start() - 1].isspace():
+                    before += " "
+                if m.end() < len(text) and text[m.end()].isspace():
+                    after = " " + after
+                results.append({"chapter": i, "hit": hit, "before": before, "match": " ".join(m.group().split()),
+                                "after": after})
+                if len(results) >= limit:
+                    return results
+        return results
+
     def info(self) -> dict:
         return {"title": self.title, "author": self.author, "language": self.language, "cover": self.cover,
                 "chapters": len(self.spine), "toc": self.toc, "chapter_titles": self.chapter_titles,
@@ -308,6 +355,7 @@ RENAME = {  # structural tags we flatten to plain containers
 DROP_WITH_CONTENT = {"script", "style", "head", "title", "iframe", "object", "embed", "noscript", "template",
                      "audio", "video", "canvas", "form", "button", "input", "select", "textarea", "math"}
 VOID = {"br", "hr", "img"}
+INLINE = {"em", "strong", "i", "b", "u", "s", "sub", "sup", "small", "a", "img", "code", "cite", "q", "abbr", "span"}
 
 
 class _Sanitiser(HTMLParser):

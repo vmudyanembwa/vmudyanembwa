@@ -8,6 +8,7 @@ import unittest
 import unittest.mock
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from datetime import date, timedelta
@@ -712,6 +713,24 @@ class ReaderApiTests(unittest.TestCase):
         self.assertEqual(list(self.books.glob("*.epub")), [])
         self.assertEqual(self.store.get_highlight(h["id"])["doc_id"], None)
         self.assertEqual(self.call("GET", f"/api/docs/{doc['id']}/chapter/1")[0], 404)
+
+    def test_search_book(self):
+        doc = self.upload()["document"]
+        search = lambda q: json.loads(self.call("GET", f"/api/docs/{doc['id']}/search?q={urllib.parse.quote(q)}")[1])  # noqa: E731
+        [hit] = search("ten THOUSAND years")  # case doesn't matter
+        self.assertEqual((hit["chapter"], hit["hit"], hit["match"]), (2, 0, "ten thousand years"))
+        self.assertTrue(hit["before"].endswith("going to live "))
+        self.assertTrue(hit["after"].startswith(". Death"))
+        # Across inline tags and line breaks, numbered within each chapter.
+        [hit] = search("see book two")
+        self.assertEqual((hit["chapter"], hit["match"]), (1, "See Book Two"))
+        hits = search("be")
+        self.assertEqual([h["hit"] for h in hits if h["chapter"] == 2], list(range(sum(h["chapter"] == 2 for h in hits))))
+        # Blocks don't run together in the snippet, and dropped content (scripts) isn't searchable.
+        self.assertEqual(search("unsocial.See")[0]["match"], "unsocial. See")
+        self.assertEqual(search("pwned"), [])
+        self.assertEqual(search("   "), [])
+        self.assertEqual(self.call("DELETE", f"/api/docs/{doc['id']}")[0], 200)
 
     def test_bookmarks_highlights_and_lengths(self):
         doc = self.upload()["document"]

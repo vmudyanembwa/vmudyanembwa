@@ -296,6 +296,18 @@ def make_handler(store, books_dir: Path | None = None):
         return {"index": index, "title": doc["chapter_titles"][index], "nodes": nodes,
                 "highlights": store.chapter_highlights(doc["id"], index)}
 
+    @route("GET", r"/api/docs/(\d+)/search")
+    def doc_search(req, q, doc_id):
+        doc = get_doc(doc_id)
+        query = q.get("q", "").strip()[:200]
+        if doc["kind"] != "epub" or not query:
+            return []  # PDFs are searched in the browser, where PDF.js has the text
+        try:
+            with epub.Book(book_path(doc)) as book:
+                return book.search(query)
+        except epub.EpubError as e:
+            raise ApiError(HTTPStatus.UNPROCESSABLE_ENTITY, str(e))
+
     @route("GET", r"/api/docs/(\d+)/image")
     def doc_image(req, q, doc_id):
         doc = get_doc(doc_id)
