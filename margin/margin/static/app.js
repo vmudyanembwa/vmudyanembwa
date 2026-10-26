@@ -1193,8 +1193,11 @@ async function renderRead(docId, chapterPart, params) {
       laidOut = true;
       return;
     }
-    spread = width >= 900;  // two pages side by side, like an open book
-    const gap = spread ? Math.round(Math.min(110, Math.max(64, width * 0.07))) : 40;
+    // Two pages side by side, like an open book, whenever each page can still hold a comfortable line
+    // (about 17 ems: ~340px at the default size, so a typical laptop window gets a spread).
+    const spreadGap = Math.round(Math.min(110, Math.max(56, width * 0.07)));
+    spread = (width - spreadGap) / 2 >= prefs.size * 17;
+    const gap = spread ? spreadGap : 40;
     const columnWidth = spread ? (width - gap) / 2 : width;
     stage.style.height = `${height}px`;
     text.style.height = `${height}px`;
@@ -1238,16 +1241,22 @@ async function renderRead(docId, chapterPart, params) {
   function showPageNumbers() {
     let first;
     let second = null;
+    let total = isPdf ? doc.chapters : 0;
     if (isPdf) first = chapter + 1;
     else {
       const perScreen = spread ? 2 : 1;
-      const before = doc.chapter_chars ? doc.chapter_chars.slice(0, chapter).reduce((a, b) => a + b, 0) : 0;
-      const base = before ? Math.round(before / (charsPerPage() / perScreen)) : 0;
+      const perColumn = charsPerPage() / perScreen;
+      const chars = doc.chapter_chars || [];
+      const before = chars.slice(0, chapter).reduce((a, b) => a + b, 0);
+      const after = chars.slice(chapter + 1).reduce((a, b) => a + b, 0);
+      const base = before ? Math.round(before / perColumn) : 0;
       first = base + page * perScreen + 1;
       if (spread && page * 2 + 1 < columns) second = first + 1;  // the last spread may have an empty right page
+      total = base + columns + Math.round(after / perColumn);
     }
-    pageNums[0].textContent = first.toLocaleString();
-    pageNums[1].textContent = second == null ? '' : second.toLocaleString();
+    const of = (n) => (total ? `${n.toLocaleString()} of ${total.toLocaleString()}` : n.toLocaleString());
+    pageNums[0].textContent = of(first);
+    pageNums[1].textContent = second == null ? '' : of(second);
     pageNums[1].hidden = !spread;
     pagerNums.setAttribute('aria-label', second == null ? `Page ${first}` : `Pages ${first} and ${second}`);
   }
@@ -1256,12 +1265,9 @@ async function renderRead(docId, chapterPart, params) {
       const left = doc.chapters - 1 - chapter;
       return [left ? `${left.toLocaleString()} ${left === 1 ? 'page' : 'pages'} left` : 'Last page', doc.chapter_titles[chapter]].filter(Boolean).join(' · ');
     }
-    const inChapter = pages - 1 - page;
-    const chapterPart = inChapter === 0 ? 'Last page in chapter' : `${inChapter} ${inChapter === 1 ? 'page' : 'pages'} left in chapter`;
-    if (!doc.chapter_chars) return chapterPart;
-    const laterChars = doc.chapter_chars.slice(chapter + 1).reduce((a, b) => a + b, 0);
-    const inBook = inChapter + Math.round(laterChars / charsPerPage());
-    return inBook <= inChapter ? `${chapterPart} · end of book` : `${chapterPart} · about ${inBook.toLocaleString()} left in book`;
+    // Counted in pages (columns), like the page numbers, not in screenfuls.
+    const inChapter = Math.max(0, columns - (page + 1) * (spread ? 2 : 1));
+    return inChapter === 0 ? 'Last page in chapter' : `${inChapter} ${inChapter === 1 ? 'page' : 'pages'} left in chapter`;
   }
 
   // --- bookmarks: one per page (or per screenful when scrolling)

@@ -524,7 +524,6 @@ body.reading.paged .reader-bar { margin-bottom: 0; }
 .page-stage .reader-text figure, .page-stage .reader-text table { break-inside: avoid; }
 /* An open book across the window: wide outer margins, a generous gutter, nothing drawn between pages. */
 body.reading.paged main { max-width: 1560px; padding: 52px clamp(20px, 5.5vw, 96px) 0; }
-@media (max-width: 899px) { body.reading.paged main { max-width: 760px; } }
 .pager { position: relative; display: flex; align-items: center; justify-content: center; height: 64px; }
 .page-nums {
   position: absolute; inset: 0; display: grid; grid-template-columns: 1fr 1fr; column-gap: var(--page-gap, 72px);
@@ -533,17 +532,15 @@ body.reading.paged main { max-width: 1560px; padding: 52px clamp(20px, 5.5vw, 96
 }
 .page-nums:has(> .page-num[hidden]) { grid-template-columns: 1fr; }
 .page-num[hidden] { display: none; }
-.pager .pages-left { position: relative; font-size: .78rem; color: var(--r-muted); opacity: 0; transition: opacity .2s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
-.pager:hover .page-nums { opacity: 0; }
-.pager:hover .pages-left { opacity: 1; }
-/* Page-turn arrows wait in the side margins and appear when the pointer is over the book. */
+.pager .pages-left { position: absolute; right: 0; top: 50%; transform: translateY(-50%); max-width: 40%; font: 600 .72rem var(--sans); color: var(--r-muted); opacity: .8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Page-turn arrows sit quietly in the side margins. */
 .page-turn { position: fixed; top: 50%; transform: translateY(-50%); z-index: 5; color: var(--r-muted); opacity: 0; transition: opacity .2s; }
 .pager .page-turn:first-child { left: 8px; }
 .pager .page-turn:last-child { right: 8px; }
-body.reading.paged main:has(.page-wrap:hover, .pager:hover) .page-turn:not(:disabled) { opacity: .6; }
-body.reading.paged main .page-turn:not(:disabled):hover { opacity: 1; }
+body.reading.paged .page-turn:not(:disabled) { opacity: .45; }
+body.reading.paged .page-turn:not(:disabled):hover { opacity: 1; }
 .page-turn:disabled { opacity: 0; pointer-events: none; }
-@media (hover: none) { .pager .pages-left { opacity: 1; } .page-nums { display: none; } }
+@media (max-width: 520px) { .page-nums { text-align: left; } }
 
 /* ---------- Reader: bookmarks, panel tabs, pages left ---------- */
 .page-wrap { position: relative; margin-top: clamp(28px, 7vh, 72px); }
