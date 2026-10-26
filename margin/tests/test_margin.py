@@ -466,6 +466,17 @@ class EmailConfigTests(unittest.TestCase):
                 digest.send(digest.build_message([], "d"), config)
         self.assertIn("app password", str(ctx.exception))
 
+    def test_server_with_port_typed_in_is_rejected(self):
+        config = {"MARGIN_SMTP_HOST": "smtp.gmail.com, port 587", "MARGIN_EMAIL_TO": "t"}
+        with unittest.mock.patch("smtplib.SMTP") as smtp, self.assertRaises(RuntimeError) as ctx:
+            digest.send(digest.build_message([], "d"), config)
+        smtp.assert_not_called()
+        self.assertIn("just a name like smtp.gmail.com", str(ctx.exception))
+        for bad in ("smtp.gmail.com:587", "smtp.gmail.com 587", ""):
+            with self.assertRaises(ValueError):
+                digest.check_host(bad)
+        self.assertEqual(digest.check_host(" smtp.gmail.com "), "smtp.gmail.com")
+
     def test_setup_email_without_keychain(self):
         from margin.__main__ import setup_email
         answers = iter(["smtp.example.com", "", "v@example.com", "", "n"])

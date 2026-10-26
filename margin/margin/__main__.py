@@ -221,6 +221,7 @@ def setup_email(config_file: Path) -> int:
     config["MARGIN_APP_URL"] = current.get("MARGIN_APP_URL", "http://127.0.0.1:8080")
     if not (config["MARGIN_SMTP_HOST"] and config["MARGIN_SMTP_USER"] and config["MARGIN_EMAIL_TO"]):
         raise ValueError("server, login and recipient are all required")
+    config["MARGIN_SMTP_HOST"] = digest.check_host(config["MARGIN_SMTP_HOST"])
     int(config["MARGIN_SMTP_PORT"])  # raises ValueError for a typo
 
     if shutil.which("security"):
