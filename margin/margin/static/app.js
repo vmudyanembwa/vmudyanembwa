@@ -45,6 +45,7 @@ const ICONS = {
   back: ['M15 18l-6-6 6-6'],
   toc: ['M8 6h13', 'M8 12h13', 'M8 18h13', 'M3 6h.01', 'M3 12h.01', 'M3 18h.01'],
   type: ['M4 7V4h16v3', 'M9 20h6', 'M12 4v16'],
+  textsize: ['M2 19l3.5-9 3.5 9', 'M3.4 16h4.2', 'M10.5 19l5.25-15L21 19', 'M12.6 13.5h6.3'],
   next: ['M9 18l6-6-6-6'],
   sun: ['M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10z', 'M12 1v2', 'M12 21v2', 'M4.22 4.22l1.42 1.42', 'M18.36 18.36l1.42 1.42', 'M1 12h2', 'M21 12h2', 'M4.22 19.78l1.42-1.42', 'M18.36 5.64l1.42-1.42'],
   expand: ['M8 3H5a2 2 0 0 0-2 2v3', 'M21 8V5a2 2 0 0 0-2-2h-3', 'M3 16v3a2 2 0 0 0 2 2h3', 'M16 21h3a2 2 0 0 0 2-2v-3'],
@@ -643,7 +644,7 @@ function bookCover(doc, size = 'shelf') {
 }
 
 async function renderShelf(message) {
-  const docs = await api('docs');
+  const [docs, categories] = await Promise.all([api('docs'), api('categories')]);
   const status = statusLine();
   if (message) status.set(...message);
   const input = el('input', { type: 'file', accept: '.epub,.pdf,application/epub+zip,application/pdf', multiple: true, hidden: true });
@@ -677,34 +678,196 @@ async function renderShelf(message) {
     return;
   }
 
-  const [current, ...rest] = docs;
   const pct = (d) => Math.round(d.progress * 100);
   const progressBar = (d) => { const i = el('i'); i.style.width = `${pct(d)}%`; return el('div', { class: 'progress' }, i); };
-  const continueCard = el('a', { class: 'card continue', href: `#/read/${current.id}` },
-    bookCover(current, 'shelf'),
-    el('div', { class: 'continue-body' },
-      el('span', { class: 'eyebrow' }, current.last_opened ? 'Continue reading' : 'Start reading', current.kind === 'pdf' ? ' · PDF' : ''),
-      el('h2', {}, current.title),
-      current.author ? el('p', { class: 'muted' }, current.author) : null,
-      el('div', { class: 'continue-progress' }, progressBar(current), el('span', { class: 'small muted' }, `${pct(current)}%`)),
-      el('span', { class: 'btn primary' }, icon('books'), current.last_opened ? 'Continue' : 'Open book')));
+  const categoriesButton = (d) => el('button', {
+    class: 'btn ghost icon-only book-categories', type: 'button', title: `Categories for ${d.title}`, 'aria-label': `Categories for ${d.title}`,
+    onclick: () => editBookCategories(d, categories),
+  }, icon('tag'));
 
-  fill(view, head, status, continueCard,
+  // Smart shelves fill themselves from reading progress; each only shows when it has books.
+  // A filter that no longer exists (category deleted, shelf emptied) falls back to the whole shelf.
+  const smart = SMART_SHELVES.map((sh) => ({ ...sh, books: docs.filter((d) => sh.test(d, categories)) })).filter((sh) => sh.books.length);
+  let filter = shelfFilter();
+  if (filter && !smart.some((sh) => sh.key === filter) && !categories.some((c) => c.name === filter)) filter = '';
+  const setFilter = (name) => { saveShelfFilter(name === filter ? '' : name); renderShelf(); };
+  const chip = (key, label, count) => el('button', { class: 'tab', type: 'button', 'aria-pressed': String(key === filter), onclick: () => setFilter(key) },
+    label, el('span', { class: 'n' }, count));
+  const filterRow = el('div', { class: 'filter-row shelf-filter', role: 'group', 'aria-label': 'Shelves and categories' },
+    chip('', 'All', docs.length),
+    smart.map((sh) => chip(sh.key, sh.label, sh.books.length)),
+    categories.length ? el('span', { class: 'filter-sep', 'aria-hidden': 'true' }) : null,
+    categories.map((c) => chip(c.name, c.name, c.count)),
+    categories.length ? el('button', { class: 'btn ghost', type: 'button', onclick: () => manageCategories(categories) }, icon('note'), 'Edit') : null);
+  const hint = categories.length ? null
+    : el('p', { class: 'small muted shelf-hint' }, 'Sort your books into categories with the ', icon('tag'), ' button on each cover.');
+
+  const shelfGrid = (books) => el('div', { class: 'shelf' }, books.map((d) => el('div', { class: 'shelf-item' },
+    el('a', { href: `#/read/${d.id}`, class: 'shelf-link' },
+      el('div', { class: 'cover-wrap' }, bookCover(d, 'shelf'), d.kind === 'pdf' ? el('span', { class: 'kind-badge' }, 'PDF') : null),
+      el('strong', {}, d.title),
+      d.author ? el('span', { class: 'muted small' }, d.author) : null,
+      el('div', { class: 'shelf-progress' }, progressBar(d), el('span', { class: 'small muted' }, d.progress ? `${pct(d)}%` : 'New'))),
+    categoriesButton(d),
+    el('button', {
+      class: 'btn ghost icon-only remove-book', type: 'button', title: `Remove ${d.title}`, 'aria-label': `Remove ${d.title}`,
+      onclick: async () => {
+        if (!confirm(`Remove “${d.title}” from your Reader? Your highlights from it stay in your library.`)) return;
+        try { await api(`docs/${d.id}`, { method: 'DELETE' }); toast('Book removed'); renderShelf(); } catch (e) { toast(e.message); }
+      },
+    }, icon('trash')))));
+
+  if (filter) {
+    // A category shows all of its books, most recently read first, without the "continue" card.
+    const shelf = smart.find((sh) => sh.key === filter);
+    const books = shelf ? shelf.books : docs.filter((d) => d.categories.includes(filter));
+    fill(view, head, status, filterRow,
+      el('h2', { class: 'shelf-h' }, shelf ? shelf.label : filter, el('span', { class: 'muted small shelf-count' }, plural(books.length, 'book'))),
+      shelfGrid(books));
+    return;
+  }
+
+  const [current, ...rest] = docs;
+  const continueCard = el('div', { class: 'continue-wrap' },
+    el('a', { class: 'card continue', href: `#/read/${current.id}` },
+      bookCover(current, 'shelf'),
+      el('div', { class: 'continue-body' },
+        el('span', { class: 'eyebrow' }, current.last_opened ? 'Continue reading' : 'Start reading', current.kind === 'pdf' ? ' · PDF' : ''),
+        el('h2', {}, current.title),
+        current.author ? el('p', { class: 'muted' }, current.author) : null,
+        current.categories.length ? el('p', { class: 'small muted continue-cats' }, current.categories.join(' · ')) : null,
+        el('div', { class: 'continue-progress' }, progressBar(current), el('span', { class: 'small muted' }, `${pct(current)}%`)),
+        el('span', { class: 'btn primary' }, icon('books'), current.last_opened ? 'Continue' : 'Open book'))),
+    categoriesButton(current));
+
+  fill(view, head, status, filterRow, hint, continueCard,
     rest.length ? el('h2', { class: 'shelf-h' }, 'Your shelf') : null,
-    rest.length ? el('div', { class: 'shelf' }, rest.map((d) => el('div', { class: 'shelf-item' },
-      el('a', { href: `#/read/${d.id}`, class: 'shelf-link' },
-        el('div', { class: 'cover-wrap' }, bookCover(d, 'shelf'), d.kind === 'pdf' ? el('span', { class: 'kind-badge' }, 'PDF') : null),
-        el('strong', {}, d.title),
-        d.author ? el('span', { class: 'muted small' }, d.author) : null,
-        el('div', { class: 'shelf-progress' }, progressBar(d), el('span', { class: 'small muted' }, d.progress ? `${pct(d)}%` : 'New'))),
-      el('button', {
-        class: 'btn ghost icon-only remove-book', type: 'button', title: `Remove ${d.title}`, 'aria-label': `Remove ${d.title}`,
-        onclick: async () => {
-          if (!confirm(`Remove “${d.title}” from your Reader? Your highlights from it stay in your library.`)) return;
-          try { await api(`docs/${d.id}`, { method: 'DELETE' }); toast('Book removed'); renderShelf(); } catch (e) { toast(e.message); }
-        },
-      }, icon('trash'))))) : null,
+    rest.length ? shelfGrid(rest) : null,
   );
+}
+
+// ---------- Reader: book categories ----------
+
+// Keys start with a NUL so they can't clash with a category name (names are trimmed text).
+const FINISHED_AT = 0.98;  // the last page rarely reads as exactly 100%
+const SMART_SHELVES = [
+  { key: '\u0000reading', label: 'Reading', test: (d) => d.progress > 0 && d.progress < FINISHED_AT },
+  { key: '\u0000new', label: 'Not started', test: (d) => !d.progress },
+  { key: '\u0000finished', label: 'Finished', test: (d) => d.progress >= FINISHED_AT },
+  { key: '\u0000pdf', label: 'PDFs', test: (d) => d.kind === 'pdf' },
+  { key: '\u0000uncategorised', label: 'Uncategorised', test: (d, categories) => categories.length > 0 && !d.categories.length },
+];
+
+function shelfFilter() {
+  try { return localStorage.getItem('margin-shelf-category') || ''; } catch { return ''; }
+}
+
+function saveShelfFilter(name) {
+  try { localStorage.setItem('margin-shelf-category', name); } catch { /* private mode: just don't remember */ }
+}
+
+/** A throwaway <dialog>: built, shown, and removed from the page when it closes. */
+function openDialog(title, ...content) {
+  const form = el('form', { method: 'dialog', class: 'dialog-body' }, el('h2', {}, title), ...content);
+  const dialog = el('dialog', { 'aria-label': title }, form);
+  document.body.append(dialog);
+  dialog.addEventListener('close', () => dialog.remove());
+  dialog.showModal();
+  return { dialog, form };
+}
+
+async function editBookCategories(doc, categories) {
+  const chosen = new Map(doc.categories.map((n) => [n.toLowerCase(), n]));
+  const names = [...categories.map((c) => c.name)];
+  const list = el('div', { class: 'cat-list' });
+  const suggestions = el('div', { class: 'cat-suggest' });
+  const drawList = () => fill(list, names.length ? names.map((n) => el('label', { class: 'cat-check' },
+    el('input', {
+      type: 'checkbox', checked: chosen.has(n.toLowerCase()),
+      onchange: (ev) => { if (ev.target.checked) chosen.set(n.toLowerCase(), n); else chosen.delete(n.toLowerCase()); drawSuggestions(); },
+    }), el('span', {}, n))) : el('p', { class: 'small muted', style: 'margin:0' }, 'No categories yet. Add your first one below.'));
+  const add = (raw) => {
+    const n = raw.trim();
+    if (!n) return;
+    const existing = names.find((x) => x.toLowerCase() === n.toLowerCase());
+    if (!existing) names.push(n);
+    chosen.set(n.toLowerCase(), existing || n);
+    drawList();
+    drawSuggestions();
+  };
+  let subjects = doc.subjects || [];
+  const drawSuggestions = () => {
+    const left = subjects.filter((s) => !chosen.has(s.toLowerCase()));
+    fill(suggestions, left.length ? el('span', { class: 'small muted' }, 'Suggested from the book:') : null,
+      left.map((s) => el('button', { class: 'tab', type: 'button', title: `Add “${s}”`, onclick: () => add(s) }, icon('plus'), s)));
+  };
+  const input = el('input', { type: 'text', autocomplete: 'off', placeholder: 'e.g. Fiction, Work, To read', maxlength: '60' });
+  input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); add(input.value); input.value = ''; } });
+  drawList();
+  drawSuggestions();
+
+  const { dialog } = openDialog('Categories',
+    el('p', { class: 'muted', style: 'margin:0' }, doc.title),
+    list, suggestions,
+    el('div', { class: 'field' }, el('span', {}, 'New category'),
+      el('div', { class: 'row nowrap' }, input, el('button', { class: 'btn', type: 'button', onclick: () => { add(input.value); input.value = ''; input.focus(); } }, icon('plus'), 'Add'))),
+    el('div', { class: 'row end' },
+      el('button', { value: 'cancel', class: 'btn', formnovalidate: true }, 'Cancel'),
+      el('button', { value: 'save', class: 'btn primary' }, 'Save')));
+  dialog.addEventListener('close', async () => {
+    if (dialog.returnValue !== 'save') return;
+    if (input.value.trim()) add(input.value);  // typed a name but pressed Save instead of Add
+    try {
+      await api(`docs/${doc.id}/categories`, { method: 'PUT', body: { categories: [...chosen.values()] } });
+      toast('Categories saved');
+      renderShelf();
+    } catch (e) { toast(e.message); }
+  });
+
+  // Books imported before subjects were read: the book page fills them in the first time it's asked.
+  if (doc.subjects == null && doc.kind === 'epub') {
+    try { subjects = (await api(`docs/${doc.id}`)).subjects || []; drawSuggestions(); } catch { /* suggestions are optional */ }
+  }
+}
+
+function manageCategories(categories) {
+  let changed = false;
+  let pending = Promise.resolve();  // renames and deletes, in order, so "Done" can wait for them
+  const rows = categories.map((c) => {
+    const input = el('input', { type: 'text', value: c.name, 'aria-label': `Rename ${c.name}`, maxlength: '60' });
+    const save = async () => {
+      const name = input.value.trim();
+      if (!name || name === c.name) { input.value = c.name; return; }
+      try {
+        const renamed = (await api(`categories/${c.id}`, { method: 'PATCH', body: { name } })).name;
+        if (shelfFilter() === c.name) saveShelfFilter(renamed);  // keep showing the same books
+        c.name = renamed;
+        input.value = renamed;
+        changed = true;
+      } catch (e) { toast(e.message); }
+    };
+    input.addEventListener('change', () => { pending = pending.then(save); });
+    input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); } });
+    const row = el('div', { class: 'cat-row' }, input, el('span', { class: 'small muted' }, plural(c.count, 'book')),
+      el('button', {
+        class: 'btn ghost icon-only danger', type: 'button', title: `Delete ${c.name}`, 'aria-label': `Delete ${c.name}`,
+        onclick: async () => {
+          if (!confirm(`Delete the category “${c.name}”? Its books stay on your shelf.`)) return;
+          pending = pending.then(async () => {
+            try { await api(`categories/${c.id}`, { method: 'DELETE' }); row.remove(); changed = true; } catch (e) { toast(e.message); }
+          });
+        },
+      }, icon('trash')));
+    return row;
+  });
+  const { dialog } = openDialog('Edit categories',
+    el('p', { class: 'small muted', style: 'margin:0' }, 'Rename a category to an existing name to merge the two.'),
+    el('div', { class: 'cat-list' }, rows),
+    el('div', { class: 'row end' }, el('button', { value: 'done', class: 'btn primary' }, 'Done')));
+  dialog.addEventListener('close', async () => {
+    await pending;
+    if (changed) renderShelf();
+  });
 }
 
 // ---------- Reader: PDF support (PDF.js, loaded only when a PDF is opened) ----------
@@ -781,6 +944,7 @@ async function preparePdf(doc, pdfDoc) {
 // theme auto = follow the Mac's light/dark setting; layout pages = flip pages, scroll = one long column
 const READER_DEFAULTS = { size: 20, theme: 'auto', font: 'serif', layout: 'pages' };
 let pendingPosition = null;  // carries the reading position across a re-render (e.g. switching layout)
+let bookSearch = null;  // { docId, query, results }: the last search, kept while you jump between chapters
 const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
 
 function readerPrefs() {
@@ -829,9 +993,13 @@ function renderNodes(nodes, docId) {
   return frag;
 }
 
-/** Find `text` in the rendered chapter, ignoring whitespace differences. Returns DOM positions or null. */
-function findText(root, text) {
-  const target = text.replace(/\s+/g, '');
+/**
+ * Find `text` in the rendered chapter, ignoring whitespace differences. Returns DOM positions or null.
+ * nth picks a later match (0 = first); caseless matches the way book search does.
+ */
+function findText(root, text, { nth = 0, caseless = false } = {}) {
+  const fold = (t) => (caseless ? t.toLowerCase() : t);
+  const target = fold(text.replace(/\s+/g, ''));
   if (!target) return null;
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const chars = [];
@@ -839,10 +1007,11 @@ function findText(root, text) {
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     const data = node.data;
     for (let i = 0; i < data.length; i += 1) {
-      if (!/\s/.test(data[i])) { flat += data[i]; chars.push([node, i]); }
+      if (!/\s/.test(data[i])) { flat += fold(data[i]); chars.push([node, i]); }
     }
   }
-  const at = flat.indexOf(target);
+  let at = flat.indexOf(target);
+  for (let k = 0; k < nth && at !== -1; k += 1) at = flat.indexOf(target, at + target.length);
   if (at === -1) return null;
   const [startNode, startOffset] = chars[at];
   const [endNode, endIndex] = chars[at + target.length - 1];
@@ -876,6 +1045,24 @@ function markSpan(root, span, highlight) {
   return marks;
 }
 
+/** Book search: matches for `query` in one chapter's text, numbered like the server's (see epub.Book.search). */
+function searchText(text, query, chapter) {
+  const letters = query.replace(/\s+/g, '');
+  if (!letters) return [];
+  const pattern = new RegExp([...letters].map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*'), 'gi');
+  const squash = (t) => t.replace(/\s+/g, ' ');
+  return [...text.matchAll(pattern)].map((m, hit) => {
+    // A little context either side, trimmed to whole words.
+    const start = Math.max(0, m.index - 60);
+    const end = m.index + m[0].length + 80;
+    let before = squash(text.slice(start, m.index));
+    let after = squash(text.slice(m.index + m[0].length, end));
+    if (start > 0) before = before.replace(/^\S*\s/, '');
+    if (end < text.length) after = after.replace(/\s\S*$/, '');
+    return { chapter, hit, match: squash(m[0]), before: before.trimStart(), after: after.trimEnd() };
+  });
+}
+
 function unmark(root, id) {
   for (const mark of root.querySelectorAll(`mark[data-id="${id}"]`)) {
     const parent = mark.parentNode;
@@ -904,13 +1091,14 @@ async function renderRead(docId, chapterPart, params) {
   document.body.classList.add('reading');
   document.body.classList.toggle('paged', paged);
   const effectiveTheme = () => (prefs.theme === 'auto' ? (systemDark.matches ? 'dark' : 'light') : prefs.theme);
+  const isDark = (theme) => theme === 'dark' || theme === 'night';
   const applyPrefs = () => {
     const theme = effectiveTheme();
     document.body.dataset.readerTheme = theme;
     // Pin the whole page (menus, panels, dialogs) to the reader's light/dark, not just the text.
-    document.documentElement.dataset.theme = theme === 'dark' ? 'dark' : 'light';
-    fill(modeButton, icon(theme === 'dark' ? 'sun' : 'moon'));
-    modeButton.title = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+    document.documentElement.dataset.theme = isDark(theme) ? 'dark' : 'light';
+    fill(modeButton, icon(isDark(theme) ? 'sun' : 'moon'));
+    modeButton.title = isDark(theme) ? 'Switch to light mode' : 'Switch to dark mode';
     modeButton.setAttribute('aria-label', modeButton.title);
     text.style.setProperty('--reader-size', `${prefs.size}px`);
     text.dataset.font = prefs.font;
@@ -980,17 +1168,20 @@ async function renderRead(docId, chapterPart, params) {
   const ribbon = el('div', { class: 'page-ribbon', hidden: true, title: 'Bookmarked', 'aria-hidden': 'true' }, icon('bookmark', { filled: true }));
   const stage = el('div', { class: 'page-stage' }, text);
   const pageWrap = el('div', { class: 'page-wrap' }, ribbon, stage);  // ribbon hangs in the margin above the page
-  const pageLabel = el('span', { class: 'page-label' });
+  // Page numbers sit under each page, like a printed book; hovering them shows how many pages are left.
+  const pageNums = [el('span', { class: 'page-num' }), el('span', { class: 'page-num' })];
   const leftLabel = el('span', { class: 'pages-left' });
   let page = 0;
   let pages = 1;
   let step = 1;
+  let spread = false;
+  let columns = 1;
   let laidOut = false;
   const pagePosition = () => (pages > 1 ? page / (pages - 1) : 0);
   const position = () => (paged ? pagePosition() : scrollPosition());
 
   function layoutPages() {
-    const pagerHeight = 56;
+    const pagerHeight = 64;
     const top = stage.getBoundingClientRect().top + window.scrollY;
     const height = Math.max(240, window.innerHeight - top - pagerHeight);
     const width = stage.clientWidth;
@@ -998,19 +1189,26 @@ async function renderRead(docId, chapterPart, params) {
       stage.style.height = `${height}px`;
       pages = 1;
       step = width;
+      spread = false;
       laidOut = true;
       return;
     }
-    const spread = width >= 900;  // two pages side by side, like an open book
-    const gap = spread ? 72 : 40;
+    // Two pages side by side, like an open book, whenever each page can still hold a comfortable line
+    // (about 17 ems: ~340px at the default size, so a typical laptop window gets a spread).
+    const spreadGap = Math.round(Math.min(110, Math.max(56, width * 0.07)));
+    spread = (width - spreadGap) / 2 >= prefs.size * 17;
+    const gap = spread ? spreadGap : 40;
+    const columnWidth = spread ? (width - gap) / 2 : width;
     stage.style.height = `${height}px`;
     text.style.height = `${height}px`;
-    text.style.columnWidth = `${spread ? (width - gap) / 2 : width}px`;
+    text.style.columnWidth = `${columnWidth}px`;
     text.style.columnGap = `${gap}px`;
     text.style.setProperty('--page-h', `${height}px`);
     text.classList.toggle('spread', spread);
+    view.style.setProperty('--page-gap', `${gap}px`);
     step = width + gap;
     pages = Math.max(1, Math.ceil((text.scrollWidth + gap - 2) / step));
+    columns = Math.max(1, Math.round((text.scrollWidth + gap) / (columnWidth + gap)));
     laidOut = true;
   }
 
@@ -1018,7 +1216,7 @@ async function renderRead(docId, chapterPart, params) {
     page = Math.min(Math.max(0, n), pages - 1);
     text.style.transition = animate ? '' : 'none';
     text.style.transform = `translateX(${-page * step}px)`;
-    pageLabel.textContent = isPdf ? `Page ${chapter + 1} of ${doc.chapters}` : `Page ${page + 1} of ${pages}`;
+    showPageNumbers();
     leftLabel.textContent = pagesLeftText();
     updateBookmarkUI();
     prevPageButton.disabled = page === 0 && chapter === 0;
@@ -1038,17 +1236,38 @@ async function renderRead(docId, chapterPart, params) {
     const lines = stage.clientHeight / (size * 1.7);
     return perLine * lines * (text.classList.contains('spread') ? 2 : 1);
   }
+  // Book page numbers. EPUBs have none, so they're estimated from the text before this chapter
+  // at this chapter's density (they shift a little with text size, as in Apple Books).
+  function showPageNumbers() {
+    let first;
+    let second = null;
+    let total = isPdf ? doc.chapters : 0;
+    if (isPdf) first = chapter + 1;
+    else {
+      const perScreen = spread ? 2 : 1;
+      const perColumn = charsPerPage() / perScreen;
+      const chars = doc.chapter_chars || [];
+      const before = chars.slice(0, chapter).reduce((a, b) => a + b, 0);
+      const after = chars.slice(chapter + 1).reduce((a, b) => a + b, 0);
+      const base = before ? Math.round(before / perColumn) : 0;
+      first = base + page * perScreen + 1;
+      if (spread && page * 2 + 1 < columns) second = first + 1;  // the last spread may have an empty right page
+      total = base + columns + Math.round(after / perColumn);
+    }
+    const of = (n) => (total ? `${n.toLocaleString()} of ${total.toLocaleString()}` : n.toLocaleString());
+    pageNums[0].textContent = of(first);
+    pageNums[1].textContent = second == null ? '' : of(second);
+    pageNums[1].hidden = !spread;
+    pagerNums.setAttribute('aria-label', second == null ? `Page ${first}` : `Pages ${first} and ${second}`);
+  }
   function pagesLeftText() {
     if (isPdf) {
       const left = doc.chapters - 1 - chapter;
       return [left ? `${left.toLocaleString()} ${left === 1 ? 'page' : 'pages'} left` : 'Last page', doc.chapter_titles[chapter]].filter(Boolean).join(' · ');
     }
-    const inChapter = pages - 1 - page;
-    const chapterPart = inChapter === 0 ? 'Last page in chapter' : `${inChapter} ${inChapter === 1 ? 'page' : 'pages'} left in chapter`;
-    if (!doc.chapter_chars) return chapterPart;
-    const laterChars = doc.chapter_chars.slice(chapter + 1).reduce((a, b) => a + b, 0);
-    const inBook = inChapter + Math.round(laterChars / charsPerPage());
-    return inBook <= inChapter ? `${chapterPart} · end of book` : `${chapterPart} · about ${inBook.toLocaleString()} left in book`;
+    // Counted in pages (columns), like the page numbers, not in screenfuls.
+    const inChapter = Math.max(0, columns - (page + 1) * (spread ? 2 : 1));
+    return inChapter === 0 ? 'Last page in chapter' : `${inChapter} ${inChapter === 1 ? 'page' : 'pages'} left in chapter`;
   }
 
   // --- bookmarks: one per page (or per screenful when scrolling)
@@ -1065,7 +1284,7 @@ async function renderRead(docId, chapterPart, params) {
     clearTimeout(barTimer);
     barTimer = setTimeout(() => {
       // Keep it up while a panel is open or the pointer is on the toolbar.
-      if (!tocPanel.hidden || !settingsPanel.hidden || document.querySelector('.reader-bar:hover')) showBar();
+      if (!tocPanel.hidden || !settingsPanel.hidden || !searchPanel.hidden || document.querySelector('.reader-bar:hover')) showBar();
       else document.body.classList.remove('bar-visible');
     }, 2500);
   }
@@ -1174,6 +1393,7 @@ async function renderRead(docId, chapterPart, params) {
   }
   const prevPageButton = el('button', { class: 'btn ghost icon-only page-turn', type: 'button', 'aria-label': 'Previous page', onclick: () => prevPage() }, icon('back'));
   const nextPageButton = el('button', { class: 'btn ghost icon-only page-turn', type: 'button', 'aria-label': 'Next page', onclick: () => nextPage() }, icon('next'));
+  const pagerNums = el('div', { class: 'page-nums' }, pageNums);
 
   if (paged) {
     // Click/tap the outer edges of the page to turn it (the middle is left for selecting text).
@@ -1374,17 +1594,87 @@ async function renderRead(docId, chapterPart, params) {
       el('button', { class: 'btn ghost icon-only', type: 'button', 'aria-label': 'Close', onclick: () => { tocPanel.hidden = true; } }, icon('discard'))),
     panelBody);
   showPanelTab('contents');
-  const openPanel = (key) => { settingsPanel.hidden = true; if (tocPanel.hidden || currentTab !== key) { tocPanel.hidden = false; showPanelTab(key); } else tocPanel.hidden = true; };
+  const openPanel = (key) => { settingsPanel.hidden = true; searchPanel.hidden = true; if (tocPanel.hidden || currentTab !== key) { tocPanel.hidden = false; showPanelTab(key); } else tocPanel.hidden = true; };
+
+  // --- search the whole book (EPUBs on the server; PDFs here, from PDF.js's text)
+  const searchInput = el('input', { type: 'search', placeholder: 'Search book', 'aria-label': 'Search this book', autocomplete: 'off', spellcheck: 'false' });
+  const searchBody = el('div', { class: 'panel-body search-results', 'aria-live': 'polite' });
+  const searchPanel = el('div', { class: 'reader-panel search-panel', hidden: true, 'aria-label': 'Search this book' },
+    el('div', { class: 'search-field' }, icon('search'), searchInput), searchBody);
+  let searchToken = 0;
+  let searchTimer;
+  async function pdfSearch(query, token) {
+    const found = [];
+    for (let i = 0; i < pdfDoc.numPages && found.length < 200; i += 1) {
+      const content = await (await pdfDoc.getPage(i + 1)).getTextContent();
+      if (token !== searchToken) return null;
+      found.push(...searchText(content.items.map((it) => it.str + (it.hasEOL ? '\n' : '')).join(''), query, i));
+    }
+    return found.slice(0, 200);
+  }
+  function showSearchResults(query, results) {
+    if (!results.length) { fill(searchBody, el('p', { class: 'panel-empty' }, `No results for “${query}”.`)); return; }
+    let lastChapter = -1;
+    const rows = [el('p', { class: 'search-count' }, `${results.length >= 200 ? '200+' : results.length} ${results.length === 1 ? 'result' : 'results'}`)];
+    for (const r of results) {
+      if (r.chapter !== lastChapter) {
+        rows.push(el('h3', { class: 'search-chapter' }, chapterName(r.chapter)));
+        lastChapter = r.chapter;
+      }
+      rows.push(el('button', { type: 'button', class: 'search-hit-row', onclick: () => openSearchHit(r) },
+        r.before, el('mark', {}, r.match), r.after));
+    }
+    fill(searchBody, rows);
+  }
+  async function runSearch() {
+    const query = searchInput.value.trim();
+    const token = ++searchToken;
+    if (query.replace(/\s+/g, '').length < 2) { bookSearch = null; fill(searchBody); return; }
+    if (bookSearch?.docId === doc.id && bookSearch.query === query) { showSearchResults(query, bookSearch.results); return; }
+    fill(searchBody, el('p', { class: 'panel-empty' }, 'Searching…'));
+    try {
+      const results = isPdf ? await pdfSearch(query, token) : await api(`docs/${doc.id}/search?q=${encodeURIComponent(query)}`);
+      if (token !== searchToken || !results) return;
+      bookSearch = { docId: doc.id, query, results };
+      showSearchResults(query, results);
+    } catch (e) { if (token === searchToken) fill(searchBody, el('p', { class: 'panel-empty' }, e.message)); }
+  }
+  searchInput.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 250); }, { signal });
+  searchInput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { clearTimeout(searchTimer); runSearch(); } }, { signal });
+  // Tint the match in the text (until the next search) and return its first <mark>.
+  function markSearchHit(query, nth) {
+    for (const m of text.querySelectorAll('mark.search-hit')) { const parent = m.parentNode; m.replaceWith(...m.childNodes); parent.normalize(); }
+    const span = findText(text, query, { nth, caseless: true });
+    if (!span) return null;
+    const marks = markSpan(text, span, {});
+    for (const m of marks) { m.className = 'search-hit'; m.removeAttribute('data-id'); m.removeAttribute('tabindex'); }
+    return marks[0] || null;
+  }
+  function openSearchHit(r) {
+    searchPanel.hidden = true;
+    if (r.chapter !== chapter) { location.hash = `#/read/${doc.id}/${r.chapter}?q=${encodeURIComponent(bookSearch.query)}&hit=${r.hit}`; return; }
+    const target = markSearchHit(bookSearch.query, r.hit);
+    if (!target) return;
+    if (paged) showPage(pageOf(target)); else target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+  function openSearch() {
+    tocPanel.hidden = true;
+    settingsPanel.hidden = true;
+    searchPanel.hidden = false;
+    if (bookSearch?.docId === doc.id && !searchInput.value) { searchInput.value = bookSearch.query; showSearchResults(bookSearch.query, bookSearch.results); }
+    searchInput.focus();
+    searchInput.select();
+  }
 
   const sizeLabel = el('span', { class: 'size-label' });
-  const themeButtons = [['auto', 'Auto'], ['light', 'Light'], ['sepia', 'Sepia'], ['dark', 'Dark']].map(([t, label]) => el('button', {
+  const themeButtons = [['auto', 'Auto'], ['light', 'Light'], ['sepia', 'Sepia'], ['dark', 'Dark'], ['night', 'Night']].map(([t, label]) => el('button', {
     type: 'button', class: 'theme-option', 'data-theme-option': t, title: t === 'auto' ? 'Match your Mac’s light/dark setting' : `${label} theme`,
     onclick: () => { prefs.theme = t; applyPrefs(); syncSettings(); },
   }, el('span', { class: `theme-swatch ${t}`, 'aria-hidden': 'true' }), label));
   // One tap from the top bar: flip between light and dark.
   const modeButton = el('button', {
     class: 'btn ghost icon-only', type: 'button',
-    onclick: () => { prefs.theme = effectiveTheme() === 'dark' ? 'light' : 'dark'; applyPrefs(); syncSettings(); },
+    onclick: () => { prefs.theme = isDark(effectiveTheme()) ? 'light' : 'dark'; applyPrefs(); syncSettings(); },
   });
   systemDark.addEventListener('change', () => { if (prefs.theme === 'auto') applyPrefs(); }, { signal });
   const fontButtons = [['serif', 'Serif'], ['sans', 'Sans']].map(([f, label]) => el('button', {
@@ -1415,13 +1705,16 @@ async function renderRead(docId, chapterPart, params) {
     el('div', { class: 'setting stacked' }, el('span', {}, 'Theme'), el('div', { class: 'themes' }, themeButtons)));
   syncSettings();
 
-  const toggle = (panel, other) => { other.hidden = true; panel.hidden = !panel.hidden; };
+  const toggleSettings = () => { tocPanel.hidden = true; searchPanel.hidden = true; settingsPanel.hidden = !settingsPanel.hidden; };
+  const toggleSearch = () => { if (searchPanel.hidden) openSearch(); else searchPanel.hidden = true; };
   document.addEventListener('mousedown', (ev) => {
-    if (!ev.target.closest('.reader-panel, .reader-bar')) { tocPanel.hidden = true; settingsPanel.hidden = true; }
+    if (!ev.target.closest('.reader-panel, .reader-bar')) { tocPanel.hidden = true; settingsPanel.hidden = true; searchPanel.hidden = true; }
   }, { signal });
 
   // --- keyboard: ← → turn pages (or change chapter when scrolling), Esc closes panels
   document.addEventListener('keydown', (ev) => {
+    if ((ev.metaKey || ev.ctrlKey) && ev.key === 'f' && !ev.target.closest('dialog')) { ev.preventDefault(); openSearch(); return; }
+    if (ev.key === 'Escape' && ev.target === searchInput) { searchPanel.hidden = true; searchInput.blur(); return; }
     if (ev.target.closest('input, textarea, dialog') || ev.metaKey || ev.ctrlKey || ev.altKey) return;
     if (paged && (ev.key === 'ArrowRight' || ev.key === 'PageDown' || (ev.key === ' ' && !ev.shiftKey))) { ev.preventDefault(); nextPage(); }
     else if (paged && (ev.key === 'ArrowLeft' || ev.key === 'PageUp' || (ev.key === ' ' && ev.shiftKey))) { ev.preventDefault(); prevPage(); }
@@ -1429,8 +1722,8 @@ async function renderRead(docId, chapterPart, params) {
     else if (ev.key === 'ArrowLeft' && chapter > 0) go(chapter - 1);
     else if (ev.key === 'Escape') {
       // First Esc closes whatever is open; with nothing open it leaves full screen.
-      const somethingOpen = !tocPanel.hidden || !settingsPanel.hidden || !toolbar.hidden;
-      tocPanel.hidden = true; settingsPanel.hidden = true; hideToolbar();
+      const somethingOpen = !tocPanel.hidden || !settingsPanel.hidden || !searchPanel.hidden || !toolbar.hidden;
+      tocPanel.hidden = true; settingsPanel.hidden = true; searchPanel.hidden = true; hideToolbar();
       if (!somethingOpen && immersive()) toggleFullscreen();
     }
     else if (ev.key === 'f') toggleFullscreen();
@@ -1442,24 +1735,30 @@ async function renderRead(docId, chapterPart, params) {
   const navButton = (i, dir) => (i < 0 || i >= doc.chapters ? el('span') : el('a', { class: `chapter-link ${dir}`, href: `#/read/${doc.id}/${i}` },
     el('small', {}, dir === 'prev' ? '← Previous' : 'Next →'), el('span', {}, chapterName(i))));
 
+  // Laid out like Apple Books: a slim bar with the book's title in the middle, contents on the left,
+  // text settings, search and bookmark on the right; page numbers under the pages.
+  const barButton = (label, iconName, onclick, extra = {}) => el('button', { class: 'btn ghost icon-only', type: 'button', title: label, 'aria-label': label, onclick, ...extra }, icon(iconName));
+  const where = isPdf ? [doc.chapter_titles[chapter], `Page ${chapter + 1} of ${doc.chapters}`].filter(Boolean).join(' · ') : chapterName(chapter);
   fill(view,
     el('div', { class: 'reader-bar' },
-      el('a', { class: 'btn ghost', href: '#/reader', 'aria-label': 'Back to shelf' }, icon('back'), el('span', { class: 'hide-sm' }, 'Shelf')),
-      el('div', { class: 'reader-title' }, el('strong', {}, doc.title),
-        el('span', {}, isPdf ? [doc.chapter_titles[chapter], `Page ${chapter + 1} of ${doc.chapters}`].filter(Boolean).join(' · ') : `${chapterName(chapter)} · ${chapter + 1} of ${doc.chapters}`)),
-      el('div', { class: 'row' },
-        el('button', { class: 'btn ghost icon-only', type: 'button', title: 'Highlights in this book', 'aria-label': 'Highlights in this book', onclick: () => openPanel('highlights') }, icon('highlighter')),
-        el('button', { class: 'btn ghost icon-only', type: 'button', title: 'Contents, bookmarks & highlights', 'aria-label': 'Contents', onclick: () => openPanel('contents') }, icon('toc')),
-        bookmarkButton,
-        fullscreenButton,
-        modeButton,
-        el('button', { class: 'btn ghost icon-only', type: 'button', title: 'Text & theme', 'aria-label': 'Text and theme', onclick: () => toggle(settingsPanel, tocPanel) }, icon('type'))),
+      el('div', { class: 'bar-side' },
+        el('div', { class: 'bar-pill' },
+          el('a', { class: 'btn ghost icon-only', href: '#/reader', title: 'Back to shelf', 'aria-label': 'Back to shelf' }, icon('back')),
+          barButton('Contents, bookmarks & highlights', 'toc', () => openPanel('contents')),
+          barButton('Highlights in this book', 'highlighter', () => openPanel('highlights')))),
+      el('div', { class: 'reader-title', title: where }, el('strong', {}, doc.title), el('span', {}, where)),
+      el('div', { class: 'bar-side end' },
+        el('div', { class: 'bar-pill' },
+          barButton('Text & theme', 'textsize', () => toggleSettings()),
+          barButton('Search this book (⌘F)', 'search', () => toggleSearch())),
+        el('div', { class: 'bar-pill hide-sm' }, modeButton, fullscreenButton),
+        el('div', { class: 'bar-pill' }, bookmarkButton)),
       el('div', { class: 'reader-progress' }, bar)),
-    tocPanel, settingsPanel,
+    tocPanel, settingsPanel, searchPanel,
     paged ? pageWrap : text,
     missing.length ? el('p', { class: 'reader-note small muted' }, `${plural(missing.length, 'highlight')} from this chapter couldn’t be placed in the text (the book may have changed). They’re still in your library.`) : null,
     paged
-      ? el('nav', { class: 'pager', 'aria-label': 'Pages' }, prevPageButton, el('div', { class: 'pager-mid' }, pageLabel, leftLabel), nextPageButton)
+      ? el('nav', { class: `pager${isPdf ? ' single' : ''}`, 'aria-label': 'Pages' }, prevPageButton, pagerNums, leftLabel, nextPageButton)
       : el('nav', { class: 'chapter-nav', 'aria-label': 'Chapters' }, navButton(chapter - 1, 'prev'), navButton(chapter + 1, 'next')),
     toolbar,
   );
@@ -1467,10 +1766,11 @@ async function renderRead(docId, chapterPart, params) {
 
   // --- where to start: a linked highlight, an anchor, a carried/saved position, the end, or the top
   const startTarget = () => (params.get('hl') ? text.querySelector(`mark[data-id="${CSS.escape(params.get('hl'))}"]`)
-    : params.get('a') ? document.getElementById(`ch-${params.get('a')}`) : null);
+    : params.get('a') ? document.getElementById(`ch-${params.get('a')}`)
+      : params.get('q') ? text.querySelector('mark.search-hit') || markSearchHit(params.get('q'), Number(params.get('hit')) || 0) : null);
   // Reopening the chapter you were reading (e.g. a page reload) returns to your page; links to a
   // specific spot (anchor, highlight, or "previous chapter, last page") take precedence.
-  const linked = params.has('a') || params.has('hl') || params.has('at');
+  const linked = params.has('a') || params.has('hl') || params.has('at') || params.has('q');
   const savedPosition = carried ?? (resuming || (chapter === doc.progress_chapter && !linked) ? doc.progress_pos : null);
   const flash = (target) => {
     if (target.matches('mark')) for (const m of text.querySelectorAll(`mark[data-id="${target.dataset.id}"]`)) m.classList.add('flash');

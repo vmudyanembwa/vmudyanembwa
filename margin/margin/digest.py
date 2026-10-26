@@ -93,6 +93,15 @@ def load_config(config_file: Path | None = None) -> dict:
     return config
 
 
+def check_host(host: str) -> str:
+    """Reject things like "smtp.gmail.com, port 587": the server name only, the port has its own setting."""
+    host = host.strip()
+    if not host or any(c in host for c in " ,:/@"):
+        raise ValueError(f"SMTP server should be just a name like smtp.gmail.com, got {host!r}; "
+                         "the port goes in MARGIN_SMTP_PORT")
+    return host
+
+
 def is_configured(config: dict) -> bool:
     return bool(config.get("MARGIN_SMTP_HOST") and config.get("MARGIN_EMAIL_TO"))
 
@@ -109,7 +118,10 @@ def send(msg: EmailMessage, config: dict):
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(domain=sender.rpartition("@")[2] or "localhost")
     port = int(config.get("MARGIN_SMTP_PORT") or 587)
-    host = config["MARGIN_SMTP_HOST"]
+    try:
+        host = check_host(config["MARGIN_SMTP_HOST"])
+    except ValueError as e:
+        raise RuntimeError(f"{e}. Fix it in ~/.margin/email.env or run setup-email again")
     # smtplib skips certificate checks unless given a context; verify so the password only goes to the real server.
     tls = ssl.create_default_context()
     try:

@@ -37,6 +37,8 @@ def main(argv=None) -> int:
     p = sub.add_parser("import-epub", aliases=["import-books"],
                        help="add EPUB and PDF books to the reader (files or folders; safe to re-run)")
     p.add_argument("paths", type=Path, nargs="+", help=".epub/.pdf files, unpacked EPUB folders, or folders to search")
+    p.add_argument("--category", action="append", default=[], metavar="NAME",
+                   help="put every imported book in this category (repeat for several)")
 
     p = sub.add_parser("digest", help="email today's review (set up first with setup-email)")
     p.add_argument("--dry-run", action="store_true", help="print the email instead of sending it")
@@ -90,7 +92,7 @@ def run(args, store) -> int:
         result = store.add_highlights(items)
         print(f"Apple Books: {len(items)} found, {result['added']} added, {result['skipped']} already present")
     elif args.command in ("import-epub", "import-books"):
-        return import_epubs(store, args.paths, args.books_dir)
+        return import_epubs(store, args.paths, args.books_dir, args.category)
     elif args.command == "digest":
         n = digest.send_digest(store, dry_run=args.dry_run, config=digest.load_config(args.email_config))
         if not args.dry_run:
@@ -144,7 +146,7 @@ def find_epubs(path: Path) -> list[Path]:
     return found
 
 
-def import_epubs(store, paths: list[Path], books_dir: Path) -> int:
+def import_epubs(store, paths: list[Path], books_dir: Path, categories: list[str] = ()) -> int:
     books = [b for p in paths for b in find_epubs(p)]
     if not books:
         print("No EPUB or PDF files found.")
@@ -162,6 +164,9 @@ def import_epubs(store, paths: list[Path], books_dir: Path) -> int:
             logging.error("%s: %s", book.name, e)
             failed += 1
             continue
+        if categories:
+            # Added to (never replacing) the book's categories, so re-running is harmless.
+            store.set_document_categories(doc["id"], categories, replace=False)
         if created:
             added += 1
             print(f"Added: {doc['title']}" + (f" — {doc['author']}" if doc["author"] else ""))
@@ -216,6 +221,7 @@ def setup_email(config_file: Path) -> int:
     config["MARGIN_APP_URL"] = current.get("MARGIN_APP_URL", "http://127.0.0.1:8080")
     if not (config["MARGIN_SMTP_HOST"] and config["MARGIN_SMTP_USER"] and config["MARGIN_EMAIL_TO"]):
         raise ValueError("server, login and recipient are all required")
+    config["MARGIN_SMTP_HOST"] = digest.check_host(config["MARGIN_SMTP_HOST"])
     int(config["MARGIN_SMTP_PORT"])  # raises ValueError for a typo
 
     if shutil.which("security"):

@@ -8,6 +8,7 @@ import unittest
 import unittest.mock
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from datetime import date, timedelta
@@ -465,6 +466,17 @@ class EmailConfigTests(unittest.TestCase):
                 digest.send(digest.build_message([], "d"), config)
         self.assertIn("app password", str(ctx.exception))
 
+    def test_server_with_port_typed_in_is_rejected(self):
+        config = {"MARGIN_SMTP_HOST": "smtp.gmail.com, port 587", "MARGIN_EMAIL_TO": "t"}
+        with unittest.mock.patch("smtplib.SMTP") as smtp, self.assertRaises(RuntimeError) as ctx:
+            digest.send(digest.build_message([], "d"), config)
+        smtp.assert_not_called()
+        self.assertIn("just a name like smtp.gmail.com", str(ctx.exception))
+        for bad in ("smtp.gmail.com:587", "smtp.gmail.com 587", ""):
+            with self.assertRaises(ValueError):
+                digest.check_host(bad)
+        self.assertEqual(digest.check_host(" smtp.gmail.com "), "smtp.gmail.com")
+
     def test_setup_email_without_keychain(self):
         from margin.__main__ import setup_email
         answers = iter(["smtp.example.com", "", "v@example.com", "", "n"])
@@ -713,6 +725,24 @@ class ReaderApiTests(unittest.TestCase):
         self.assertEqual(self.store.get_highlight(h["id"])["doc_id"], None)
         self.assertEqual(self.call("GET", f"/api/docs/{doc['id']}/chapter/1")[0], 404)
 
+    def test_search_book(self):
+        doc = self.upload()["document"]
+        search = lambda q: json.loads(self.call("GET", f"/api/docs/{doc['id']}/search?q={urllib.parse.quote(q)}")[1])  # noqa: E731
+        [hit] = search("ten THOUSAND years")  # case doesn't matter
+        self.assertEqual((hit["chapter"], hit["hit"], hit["match"]), (2, 0, "ten thousand years"))
+        self.assertTrue(hit["before"].endswith("going to live "))
+        self.assertTrue(hit["after"].startswith(". Death"))
+        # Across inline tags and line breaks, numbered within each chapter.
+        [hit] = search("see book two")
+        self.assertEqual((hit["chapter"], hit["match"]), (1, "See Book Two"))
+        hits = search("be")
+        self.assertEqual([h["hit"] for h in hits if h["chapter"] == 2], list(range(sum(h["chapter"] == 2 for h in hits))))
+        # Blocks don't run together in the snippet, and dropped content (scripts) isn't searchable.
+        self.assertEqual(search("unsocial.See")[0]["match"], "unsocial. See")
+        self.assertEqual(search("pwned"), [])
+        self.assertEqual(search("   "), [])
+        self.assertEqual(self.call("DELETE", f"/api/docs/{doc['id']}")[0], 200)
+
     def test_bookmarks_highlights_and_lengths(self):
         doc = self.upload()["document"]
         info = json.loads(self.call("GET", f"/api/docs/{doc['id']}")[1])
@@ -837,6 +867,115 @@ class PdfTests(unittest.TestCase):
         self.assertFalse((self.books / f"{doc['file']}.cover").exists())
 
 
+class CategoryTests(unittest.TestCase):
+    def setUp(self):
+        self.store = Store(today=Clock())
+        info = {"title": "", "author": "", "chapters": 1, "cover": "", "toc": [], "chapter_titles": [""]}
+        self.a, _ = self.store.add_document("a", "a.epub", {**info, "title": "A"})
+        self.b, _ = self.store.add_document("b", "b.epub", {**info, "title": "B"})
+
+    def cats(self):
+        return {d["title"]: d["categories"] for d in self.store.documents()}
+
+    def test_assign_replace_and_add(self):
+        self.assertEqual(self.store.set_document_categories(self.a, ["Fiction", " fiction ", "Work", ""]), ["Fiction", "Work"])
+        self.store.set_document_categories(self.b, ["FICTION"])  # same category, whatever the case
+        self.assertEqual(self.cats(), {"A": ["Fiction", "Work"], "B": ["Fiction"]})
+        self.assertEqual([(c["name"], c["count"]) for c in self.store.categories()], [("Fiction", 2), ("Work", 1)])
+        self.store.set_document_categories(self.a, ["Work"])
+        self.assertEqual(self.cats()["A"], ["Work"])
+        self.store.set_document_categories(self.a, ["History"], replace=False)
+        self.assertEqual(self.store.get_document(self.a)["categories"], ["History", "Work"])
+        self.assertIsNone(self.store.set_document_categories(999, ["X"]))
+
+    def test_rename_merges_and_delete_keeps_books(self):
+        self.store.set_document_categories(self.a, ["Sci-fi", "Fiction"])
+        self.store.set_document_categories(self.b, ["Science fiction"])
+        ids = {c["name"]: c["id"] for c in self.store.categories()}
+        self.assertEqual(self.store.rename_category(ids["Fiction"], "Novels")["name"], "Novels")
+        merged = self.store.rename_category(ids["Science fiction"], "sci-fi")
+        self.assertEqual((merged["id"], merged["name"], merged["count"]), (ids["Sci-fi"], "sci-fi", 2))
+        self.assertEqual(self.cats(), {"A": ["Novels", "sci-fi"], "B": ["sci-fi"]})
+        with self.assertRaises(ValueError):
+            self.store.rename_category(ids["Fiction"], "  ")
+        self.assertIsNone(self.store.rename_category(999, "X"))
+        self.assertTrue(self.store.delete_category(ids["Sci-fi"]))
+        self.assertFalse(self.store.delete_category(ids["Sci-fi"]))
+        self.assertEqual(self.cats(), {"A": ["Novels"], "B": []})
+
+    def test_removing_a_book_keeps_its_categories(self):
+        self.store.set_document_categories(self.a, ["Fiction"])
+        self.store.delete_document(self.a)
+        self.assertEqual([(c["name"], c["count"]) for c in self.store.categories()], [("Fiction", 0)])
+
+    def test_subject_suggestions(self):
+        from margin.epub import Book, clean_subjects
+        from epub_fixtures import make_epub
+        self.assertEqual(clean_subjects(["FIC019000", "Fiction / Literary", "fiction", "Philosophy -- Stoicism",
+                                         "General", None, " history. ", "x" * 41]),
+                         ["Fiction", "Literary", "Philosophy", "Stoicism", "History"])
+        with Book(make_epub(subjects=["Philosophy / Stoicism", "PHI000000"])) as book:
+            self.assertEqual(book.info()["subjects"], ["Philosophy", "Stoicism"])
+        with Book(make_epub()) as book:
+            self.assertEqual(book.info()["subjects"], [])
+
+
+class CategoryApiTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.books = Path(self.tmp.name) / "books"
+        self.store = Store(today=Clock())
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.store, self.books))
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.store.close()
+        self.tmp.cleanup()
+
+    def call(self, method, path, body=None, raw=None):
+        data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
+        req = urllib.request.Request(self.base + path, method=method, data=data,
+                                     headers={"Content-Type": "application/octet-stream" if raw is not None else "application/json"})
+        try:
+            with urllib.request.urlopen(req) as res:
+                return res.status, json.loads(res.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def test_categories_api(self):
+        from epub_fixtures import make_epub
+        status, body = self.call("POST", "/api/docs?filename=m.epub", raw=make_epub(subjects=["Philosophy"]))
+        doc = body["document"]
+        self.assertEqual((doc["subjects"], doc["categories"]), (["Philosophy"], []))
+        self.assertEqual(self.call("PUT", f"/api/docs/{doc['id']}/categories", {"categories": ["Philosophy", "Classics"]}),
+                         (200, {"categories": ["Classics", "Philosophy"]}))
+        self.assertEqual(self.call("GET", "/api/docs")[1][0]["categories"], ["Classics", "Philosophy"])
+        cats = self.call("GET", "/api/categories")[1]
+        self.assertEqual([(c["name"], c["count"]) for c in cats], [("Classics", 1), ("Philosophy", 1)])
+        self.assertEqual(self.call("PATCH", f"/api/categories/{cats[0]['id']}", {"name": "Greats"})[1]["name"], "Greats")
+        self.assertEqual(self.call("PATCH", f"/api/categories/{cats[0]['id']}", {"name": ""})[0], 400)
+        self.assertEqual(self.call("DELETE", f"/api/categories/{cats[1]['id']}")[0], 200)
+        self.assertEqual(self.call("GET", f"/api/docs/{doc['id']}")[1]["categories"], ["Greats"])
+        self.assertEqual(self.call("DELETE", f"/api/categories/{cats[1]['id']}")[0], 404)
+        self.assertEqual(self.call("PUT", f"/api/docs/{doc['id']}/categories", {"categories": "Greats"})[0], 400)
+        self.assertEqual(self.call("PUT", "/api/docs/999/categories", {"categories": []})[0], 404)
+
+    def test_subjects_filled_in_for_older_books(self):
+        from epub_fixtures import make_epub
+        doc = self.call("POST", "/api/docs?filename=m.epub", raw=make_epub(subjects=["History"]))[1]["document"]
+        with self.store.conn:  # as if imported before subjects were read
+            info = json.loads(self.store.conn.execute("SELECT info FROM documents").fetchone()[0])
+            del info["subjects"]
+            self.store.conn.execute("UPDATE documents SET info = ?", (json.dumps(info),))
+        self.assertIsNone(self.call("GET", "/api/docs")[1][0]["subjects"])
+        self.assertEqual(self.call("GET", f"/api/docs/{doc['id']}")[1]["subjects"], ["History"])
+        self.assertEqual(self.call("GET", "/api/docs")[1][0]["subjects"], ["History"])
+
+
 class ImportEpubCliTests(unittest.TestCase):
     def test_files_and_folders(self):
         import contextlib
@@ -864,6 +1003,23 @@ class ImportEpubCliTests(unittest.TestCase):
             self.assertIn("0 added, 4 already in your reader", out.getvalue())
             self.assertEqual(len(list((tmp / "data" / "books").glob("*.epub"))), 3)
             self.assertEqual(len(list((tmp / "data" / "books").glob("*.pdf"))), 1)
+
+    def test_category_flag(self):
+        import contextlib
+        import tempfile
+        from epub_fixtures import make_epub
+        from margin.__main__ import main
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "a.epub").write_bytes(make_epub(title="Book A"))
+            db = tmp / "m.db"
+            with contextlib.redirect_stdout(io.StringIO()):
+                main(["--db", str(db), "import-books", str(tmp / "a.epub"), "--category", "Work"])
+                # Re-running with another category adds to it rather than replacing.
+                main(["--db", str(db), "import-books", str(tmp / "a.epub"), "--category", "Classics", "--category", "work"])
+            store = Store(str(db))
+            self.assertEqual(store.documents()[0]["categories"], ["Classics", "Work"])
+            store.close()
 
 
 class MigrationTests(unittest.TestCase):
