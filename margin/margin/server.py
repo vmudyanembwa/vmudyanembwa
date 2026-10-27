@@ -88,7 +88,7 @@ def make_handler(store, books_dir: Path | None = None):
         tags = body.get("tags", [])
         if isinstance(tags, str):
             tags = tags.split(",")
-        item = {k: str(body.get(k, "")) for k in ("text", "title", "author", "note", "url", "location")}
+        item = {k: str(body.get(k, "")) for k in ("text", "title", "author", "note", "url", "location", "color")}
         if body.get("doc_id") is not None:
             # Highlight made in the reader: file it under the book and remember the chapter.
             doc = store.get_document(_int(body["doc_id"]))
@@ -102,7 +102,10 @@ def make_handler(store, books_dir: Path | None = None):
             item.update(title=doc["title"], author=doc["author"], doc_id=doc["id"], chapter=chapter,
                         location=where + (f" · {title}" if title else ""),
                         highlighted_at=date.today().isoformat())
-        highlight = store.add_highlight({**item, "tags": tags})
+        try:
+            highlight = store.add_highlight({**item, "tags": tags})
+        except ValueError as e:
+            raise ApiError(HTTPStatus.BAD_REQUEST, str(e))
         if not highlight:
             raise ApiError(HTTPStatus.CONFLICT, "that highlight is already in your library")
         return {"added": 1, "skipped": 0, "highlight": highlight}

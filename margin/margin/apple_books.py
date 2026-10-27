@@ -17,6 +17,8 @@ log = logging.getLogger(__name__)
 
 CONTAINER = Path.home() / "Library/Containers/com.apple.iBooksX/Data/Documents"
 APPLE_EPOCH = datetime(2001, 1, 1, tzinfo=timezone.utc)  # Core Data timestamps count from here
+# ZANNOTATIONSTYLE: the colour picked in Books (0 is "underline").
+STYLE_COLORS = {0: "underline", 1: "green", 2: "blue", 3: "yellow", 4: "pink", 5: "purple"}
 
 
 class AppleBooksError(Exception):
@@ -93,6 +95,7 @@ def read_highlights(annotation_db: Path | None = None, library_db: Path | None =
                     SELECT a.ZANNOTATIONSELECTEDTEXT AS text,
                            a.ZANNOTATIONNOTE AS note,
                            a.ZANNOTATIONCREATIONDATE AS created,
+                           a.ZANNOTATIONSTYLE AS style,
                            b.ZTITLE AS title,
                            b.ZAUTHOR AS author
                     FROM ZAEANNOTATION a
@@ -116,6 +119,7 @@ def read_highlights(annotation_db: Path | None = None, library_db: Path | None =
         "highlighted_at": _timestamp(r["created"]),
         "tags": [],
         "url": "",
+        "color": STYLE_COLORS.get(r["style"], "yellow"),
     } for r in rows]
     log.info("apple books: found %d highlights in %d books", len(items), len({i["title"] for i in items}))
     return items

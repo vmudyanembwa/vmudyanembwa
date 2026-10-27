@@ -218,6 +218,16 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(fresh.add_highlights(importers.parse_readwise_csv(data))["added"], 2)
         self.assertEqual(sorted(h["text"] for h in fresh.search()), ["Line one\nLine two", "Other"])
 
+    def test_csv_keeps_colour(self):
+        [h] = self.store.search(q="Other")
+        self.store.update_highlight(h["id"], {"color": "purple"})
+        fresh = Store(today=Clock())
+        fresh.add_highlights(importers.parse_readwise_csv(export.highlights_csv(self.store.search())))
+        self.assertEqual({h["text"]: h["color"] for h in fresh.search()}, {"Line one\nLine two": "yellow", "Other": "purple"})
+        # Readwise colours we don't have fall back to yellow rather than failing the import.
+        [orange] = importers.parse_readwise_csv("Highlight,Color\nHi,orange\n")
+        self.assertEqual(fresh.add_highlights([orange])["added"], 1)
+
 
 class DigestTests(unittest.TestCase):
     def test_message_escapes_html(self):
@@ -228,6 +238,13 @@ class DigestTests(unittest.TestCase):
         self.assertNotIn("<script>", html_part)
         self.assertIn("a &amp; b", html_part)
         self.assertIn("http://localhost:8080", msg.get_body(("plain",)).get_content())
+
+    def test_message_shows_highlight_colour(self):
+        base = {"title": "T", "author": "", "note": ""}
+        msg = digest.build_message([{**base, "text": "a", "color": "blue"}, {**base, "text": "b"}], "2026-10-27")
+        html_part = msg.get_body(("html",)).get_content()
+        self.assertIn(digest.COLOR_HEX["blue"], html_part)
+        self.assertIn(digest.COLOR_HEX["yellow"], html_part)  # older highlights without a colour
 
     def test_requires_smtp_config(self):
         store = Store(today=Clock())
@@ -285,6 +302,18 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.call("DELETE", f"/api/highlights/{h['id']}")[0], 200)
         self.assertEqual(self.call("DELETE", f"/api/highlights/{h['id']}")[0], 404)
 
+    def test_highlight_colours(self):
+        status, body = self.call("POST", "/api/highlights", {"text": "Plain", "title": "Colours"})
+        self.assertEqual(json.loads(body)["highlight"]["color"], "yellow")  # default
+        status, body = self.call("POST", "/api/highlights", {"text": "Green one", "title": "Colours", "color": "Green"})
+        h = json.loads(body)["highlight"]
+        self.assertEqual(h["color"], "green")
+        status, body = self.call("PATCH", f"/api/highlights/{h['id']}", {"color": "underline"})
+        self.assertEqual(json.loads(body)["color"], "underline")
+        self.assertEqual(self.call("PATCH", f"/api/highlights/{h['id']}", {"color": "orange"})[0], 400)
+        self.assertEqual(self.call("POST", "/api/highlights", {"text": "Bad", "title": "Colours", "color": "red"})[0], 400)
+        self.assertEqual(json.loads(self.call("GET", f"/api/highlights?q=green")[1])[0]["color"], "underline")
+
         self.assertEqual(self.call("PUT", "/api/settings", {"daily_count": 0})[0], 400)
         self.assertEqual(self.call("GET", "/api/export/csv")[0], 200)
         self.assertEqual(self.call("GET", "/api/export/markdown")[0], 200)
@@ -334,15 +363,18 @@ def make_fake_apple_books(root: Path):
         CREATE TABLE ZAEANNOTATION (
             Z_PK INTEGER PRIMARY KEY, ZANNOTATIONASSETID TEXT, ZANNOTATIONSELECTEDTEXT TEXT,
             ZANNOTATIONNOTE TEXT, ZANNOTATIONCREATIONDATE TIMESTAMP, ZANNOTATIONDELETED INTEGER,
-            ZPLLOCATIONRANGESTART INTEGER);
+            ZPLLOCATIONRANGESTART INTEGER, ZANNOTATIONSTYLE INTEGER);
         INSERT INTO ZAEANNOTATION (ZANNOTATIONASSETID, ZANNOTATIONSELECTEDTEXT, ZANNOTATIONNOTE,
                                    ZANNOTATIONCREATIONDATE, ZANNOTATIONDELETED, ZPLLOCATIONRANGESTART) VALUES
             ('BOOK1', 'Language, even more than colour, defines who you are to people.', 'Great line', 750000000, 0, 20),
-            ('BOOK1', 'We tell people to follow their dreams.', NULL, 749000000, 0, 10),
             ('BOOK1', 'This one was deleted', NULL, 749000000, 1, 30),
             ('BOOK1', NULL, NULL, 749000000, 0, 40),
             ('BOOK2', 'Nothing in life is as important as you think it is, while you are thinking about it.', NULL, 760000000, 0, 5),
             ('UNKNOWN', 'Highlight from a book no longer in the library', NULL, NULL, 0, 1);
+        INSERT INTO ZAEANNOTATION (ZANNOTATIONASSETID, ZANNOTATIONSELECTEDTEXT, ZANNOTATIONNOTE,
+                                   ZANNOTATIONCREATIONDATE, ZANNOTATIONDELETED, ZPLLOCATIONRANGESTART,
+                                   ZANNOTATIONSTYLE) VALUES
+            ('BOOK1', 'We tell people to follow their dreams.', NULL, 749000000, 0, 10, 4);
     """)
     ann.commit()
     ann.close()
@@ -366,6 +398,8 @@ class AppleBooksTests(unittest.TestCase):
         self.assertNotIn("This one was deleted", texts)
         crime = [i for i in items if i["title"] == "Born a Crime"]
         self.assertEqual(crime[0]["text"], "We tell people to follow their dreams.")  # reading order
+        self.assertEqual(crime[0]["color"], "pink")  # Books' colour carries over
+        self.assertEqual(crime[1]["color"], "yellow")  # no style recorded
         self.assertEqual(crime[1]["note"], "Great line")
         self.assertEqual(crime[1]["author"], "Trevor Noah")
         self.assertTrue(crime[1]["highlighted_at"].startswith("2024-"))
@@ -1041,6 +1075,7 @@ class MigrationTests(unittest.TestCase):
             store.add_highlights([item("Old highlight")])
             [h] = store.search()
             self.assertIsNone(h["doc_id"])
+            self.assertEqual(h["color"], "yellow")
             store.close()
 
 

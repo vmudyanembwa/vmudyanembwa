@@ -9,6 +9,8 @@ import csv
 import io
 import re
 
+from .db import COLORS
+
 SUPPORTED = ("kindle", "readwise_csv", "markdown")
 
 
@@ -89,7 +91,7 @@ def _dedupe_kindle(items: list[dict]) -> list[dict]:
 def parse_readwise_csv(content: str) -> list[dict]:
     """Parse the CSV format Readwise exports (and accepts for import).
 
-    Columns: Highlight, Book Title, Book Author, Note, Location, Highlighted at, Tags, URL.
+    Columns: Highlight, Book Title, Book Author, Note, Location, Highlighted at, Tags, URL, Color.
     Column names are matched case-insensitively; only Highlight is required.
     """
     reader = csv.DictReader(io.StringIO(content.lstrip("﻿")))
@@ -120,6 +122,8 @@ def parse_readwise_csv(content: str) -> list[dict]:
             highlighted_at=get(row, "highlighted at", "date"),
             tags=tags,
             url=get(row, "url", "source url"),
+            # Readwise has colours we don't (e.g. orange); those become the default.
+            color=get(row, "color").lower() if get(row, "color").lower() in COLORS else "",
         ))
     return out
 

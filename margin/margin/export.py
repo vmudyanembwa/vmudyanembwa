@@ -52,7 +52,7 @@ def markdown_zip(sources: list[dict]) -> bytes:
 
 
 CSV_COLUMNS = ["Highlight", "Book Title", "Book Author", "Note", "Location", "Highlighted at", "Tags",
-               "URL", "Favorite"]
+               "URL", "Favorite", "Color"]
 
 
 def highlights_csv(highlights: list[dict]) -> str:
@@ -62,5 +62,6 @@ def highlights_csv(highlights: list[dict]) -> str:
     writer.writerow(CSV_COLUMNS)
     for h in highlights:
         writer.writerow([h["text"], h["title"], h["author"], h["note"], h["location"],
-                         h["highlighted_at"], ", ".join(h["tags"]), h["url"], "yes" if h["favorite"] else ""])
+                         h["highlighted_at"], ", ".join(h["tags"]), h["url"], "yes" if h["favorite"] else "",
+                         h["color"]])
     return buf.getvalue()
