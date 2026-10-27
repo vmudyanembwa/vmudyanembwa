@@ -541,6 +541,11 @@ body.reading.paged .page-turn:not(:disabled) { opacity: .45; }
 body.reading.paged .page-turn:not(:disabled):hover { opacity: 1; }
 .page-turn:disabled { opacity: 0; pointer-events: none; }
 @media (max-width: 520px) { .page-nums { text-align: left; } }
+/* Smaller windows: pages left drops below the page numbers so they never collide. */
+@media (max-width: 1099px) {
+  .page-nums { align-items: start; padding-top: 12px; }
+  .pager .pages-left { top: auto; bottom: 8px; transform: none; max-width: 60%; }
+}
 
 /* ---------- Reader: bookmarks, panel tabs, pages left ---------- */
 .page-wrap { position: relative; margin-top: clamp(28px, 7vh, 72px); }

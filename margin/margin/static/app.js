@@ -1184,7 +1184,9 @@ async function renderRead(docId, chapterPart, params) {
     const pagerHeight = 64;
     const top = stage.getBoundingClientRect().top + window.scrollY;
     const height = Math.max(240, window.innerHeight - top - pagerHeight);
-    const width = stage.clientWidth;
+    // The real (fractional) width: clientWidth rounds, and a column 0.5px too wide for two to fit
+    // makes the browser lay out one wide column instead of a spread.
+    const width = stage.getBoundingClientRect().width;
     if (isPdf) {  // one fixed page, scaled to fit
       stage.style.height = `${height}px`;
       pages = 1;
@@ -1193,15 +1195,17 @@ async function renderRead(docId, chapterPart, params) {
       laidOut = true;
       return;
     }
-    // Two pages side by side, like an open book, whenever each page can still hold a comfortable line
-    // (about 17 ems: ~340px at the default size, so a typical laptop window gets a spread).
-    const spreadGap = Math.round(Math.min(110, Math.max(56, width * 0.07)));
-    spread = (width - spreadGap) / 2 >= prefs.size * 17;
+    // Two pages side by side, like an open book, in any window except a phone-sized one
+    // (each page needs about 13 ems: ~260px at the default size).
+    const spreadGap = Math.round(Math.min(110, Math.max(40, width * 0.07)));
+    spread = (width - spreadGap) / 2 >= prefs.size * 13;
     const gap = spread ? spreadGap : 40;
     const columnWidth = spread ? (width - gap) / 2 : width;
     stage.style.height = `${height}px`;
     text.style.height = `${height}px`;
-    text.style.columnWidth = `${columnWidth}px`;
+    // Floor the width and cap the count so exactly one or two columns fill each screen.
+    text.style.columnWidth = `${Math.floor(columnWidth)}px`;
+    text.style.columnCount = spread ? '2' : '1';
     text.style.columnGap = `${gap}px`;
     text.style.setProperty('--page-h', `${height}px`);
     text.classList.toggle('spread', spread);
