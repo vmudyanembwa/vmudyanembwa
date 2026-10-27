@@ -23,6 +23,11 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 
+# The bar beside each highlight matches its colour in the reader.
+COLOR_HEX = {"yellow": "#c9a227", "green": "#4caf50", "blue": "#3b82f6", "pink": "#e84a8a",
+             "purple": "#8b5cf6", "underline": "#e5484d"}
+
+
 def build_message(highlights: list[dict], day: str, app_url: str = "") -> EmailMessage:
     msg = EmailMessage()
     msg["Subject"] = f"Your daily highlights — {day}"
@@ -32,7 +37,8 @@ def build_message(highlights: list[dict], day: str, app_url: str = "") -> EmailM
         source = h["title"] + (f" — {h['author']}" if h["author"] else "")
         text_parts.append(f"{i}. \"{h['text']}\"\n   {source}" + (f"\n   Note: {h['note']}" if h["note"] else ""))
         html_parts.append(
-            '<div style="margin:0 0 24px;padding:0 0 0 14px;border-left:3px solid #c9a227">'
+            '<div style="margin:0 0 24px;padding:0 0 0 14px;border-left:3px solid '
+            f'{COLOR_HEX.get(h.get("color"), COLOR_HEX["yellow"])}">'
             f'<p style="font-size:17px;line-height:1.5;margin:0 0 6px">{html.escape(h["text"])}</p>'
             f'<p style="color:#666;font-size:13px;margin:0">{html.escape(source)}</p>'
             + (f'<p style="font-size:14px;margin:6px 0 0"><b>Note:</b> {html.escape(h["note"])}</p>' if h["note"] else "")

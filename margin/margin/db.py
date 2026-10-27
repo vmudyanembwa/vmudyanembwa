@@ -104,10 +104,22 @@ MIGRATIONS = {
     "highlights": [
         ("doc_id", "INTEGER REFERENCES documents(id) ON DELETE SET NULL"),
         ("chapter", "INTEGER"),
+        ("color", "TEXT NOT NULL DEFAULT 'yellow'"),
     ],
 }
 
 DEFAULT_SETTINGS = {"daily_count": "10"}
+
+# Highlight styles, as in Apple Books. Older highlights (from before colours) are yellow.
+COLORS = ("yellow", "green", "blue", "pink", "purple", "underline")
+DEFAULT_COLOR = "yellow"
+
+
+def _color(value) -> str:
+    color = str(value or DEFAULT_COLOR).strip().lower()
+    if color not in COLORS:
+        raise ValueError(f"colour must be one of: {', '.join(COLORS)}")
+    return color
 
 
 def fingerprint(text: str, title: str) -> str:
@@ -200,6 +212,7 @@ class Store:
         text = (item.get("text") or "").strip()
         if not text:
             return None
+        color = _color(item.get("color"))
         title = (item.get("title") or "").strip() or "Untitled"
         fp = fingerprint(text, title)
         if self.conn.execute("SELECT 1 FROM highlights WHERE fingerprint = ?", (fp,)).fetchone():
@@ -207,10 +220,10 @@ class Store:
         source_id = self._source_id(title, item.get("author") or "", item.get("url") or "")
         cur = self.conn.execute(
             "INSERT INTO highlights(source_id, text, note, location, highlighted_at, created_at,"
-            " fingerprint, due, doc_id, chapter) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " fingerprint, due, doc_id, chapter, color) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (source_id, text, (item.get("note") or "").strip(), item.get("location") or "",
              item.get("highlighted_at") or "", _now(), fp, self.today().isoformat(),
-             item.get("doc_id"), item.get("chapter")))
+             item.get("doc_id"), item.get("chapter"), color))
         if item.get("tags"):
             self._set_tags(cur.lastrowid, item["tags"])
         return cur.lastrowid
@@ -234,7 +247,7 @@ class Store:
         return self.get_highlight(new_id) if new_id else None
 
     def update_highlight(self, highlight_id: int, fields: dict) -> dict | None:
-        allowed = {"note": str, "favorite": bool, "discarded": bool, "text": str}
+        allowed = {"note": str, "favorite": bool, "discarded": bool, "text": str, "color": _color}
         with self._lock, self.conn:
             if not self.conn.execute("SELECT 1 FROM highlights WHERE id = ?", (highlight_id,)).fetchone():
                 return None

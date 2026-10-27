@@ -162,6 +162,18 @@ function actionButton(iconName, label, onclick, extra = {}) {
     icon(iconName, { filled: extra.filled }), el('span', {}, label), extra.kbd ? el('kbd', {}, extra.kbd) : null);
 }
 
+// Highlight colours, as in Apple Books (mirrors db.COLORS). Highlights from before colours are yellow.
+const HL_COLORS = [['yellow', 'Yellow'], ['green', 'Green'], ['blue', 'Blue'], ['pink', 'Pink'], ['purple', 'Purple'], ['underline', 'Underline']];
+const hlClass = (h) => `hl-${h.color || 'yellow'}`;
+
+function lastHlColor() {
+  try { return localStorage.getItem('margin-hl-color') || 'yellow'; } catch { return 'yellow'; }
+}
+
+function rememberHlColor(color) {
+  try { localStorage.setItem('margin-hl-color', color); } catch { /* private mode: just don't remember */ }
+}
+
 /** One highlight in a list (library, book page, search). Re-renders itself in place. */
 function highlightItem(h, { showSource = true } = {}) {
   const item = el('li');
@@ -173,7 +185,7 @@ function highlightItem(h, { showSource = true } = {}) {
     fill(item,
       showSource ? sourceChip(h) : null,
       h.favorite ? el('span', { class: 'fav-flag', title: 'Favourite' }, icon('star', { filled: true, label: 'Favourite' })) : null,
-      el('blockquote', { class: 'quote' }, h.text),
+      el('blockquote', { class: `quote tinted ${hlClass(h)}` }, h.text),
       noteBlock(h.note),
       tagList(h.tags),
       el('div', { class: 'meta' },
@@ -289,7 +301,7 @@ async function renderReview() {
       el('article', { class: 'card review-card' },
         el('div', { class: 'card-body' },
           sourceChip(h),
-          el('blockquote', { class: 'quote' }, h.text),
+          el('blockquote', { class: `quote tinted ${hlClass(h)}` }, h.text),
           noteBlock(h.note),
           tagList(h.tags)),
         el('div', { class: 'review-toolbar' },
@@ -1037,7 +1049,7 @@ function markSpan(root, span, highlight) {
     if (s > 0) t = t.splitText(s);
     if (e - s < t.length) t.splitText(e - s);
     if (!t.data.trim()) continue;
-    const mark = el('mark', { class: `hl-mark${highlight.note ? ' has-note' : ''}`, 'data-id': highlight.id, tabindex: 0 });
+    const mark = el('mark', { class: `hl-mark ${hlClass(highlight)}${highlight.note ? ' has-note' : ''}`, 'data-id': highlight.id, tabindex: 0 });
     t.parentNode.insertBefore(mark, t);
     mark.append(t);
     marks.push(mark);
@@ -1452,13 +1464,14 @@ async function renderRead(docId, chapterPart, params) {
     toolbar.style.top = `${(above > 70 ? above : rect.bottom + 10) + window.scrollY}px`;
   }
 
-  async function createHighlight(withNote) {
+  async function createHighlight(withNote, color = lastHlColor()) {
     const sel = window.getSelection();
     const raw = sel.toString().trim();
     if (!raw) return;
     hideToolbar();
+    rememberHlColor(color);
     try {
-      const { highlight } = await api('highlights', { method: 'POST', body: { text: raw, doc_id: doc.id, chapter } });
+      const { highlight } = await api('highlights', { method: 'POST', body: { text: raw, doc_id: doc.id, chapter, color } });
       highlights.set(highlight.id, highlight);
       const span = findText(text, raw);
       if (span) markSpan(text, span, highlight);
@@ -1469,17 +1482,39 @@ async function renderRead(docId, chapterPart, params) {
   }
 
   function refreshMark(h) {
-    for (const m of text.querySelectorAll(`mark[data-id="${h.id}"]`)) m.classList.toggle('has-note', Boolean(h.note));
+    for (const m of text.querySelectorAll(`mark[data-id="${h.id}"]`)) m.className = `hl-mark ${hlClass(h)}${h.note ? ' has-note' : ''}`;
+  }
+
+  // A row of colour swatches; `current` is pressed. Keeps the text selection when clicked.
+  const swatches = (current, onpick) => el('div', { class: 'swatches' }, HL_COLORS.map(([color, label]) => el('button', {
+    type: 'button', class: 'swatch', title: label, 'aria-label': label, 'aria-pressed': current ? String(color === current) : null,
+    onmousedown: (e) => e.preventDefault(), onclick: () => onpick(color),
+  }, el('span', { class: `swatch-dot hl-${color}` }, color === 'underline' ? 'a' : null))));
+
+  async function recolour(h, color) {
+    rememberHlColor(color);
+    if (color === (h.color || 'yellow')) return;
+    try {
+      const updated = await api(`highlights/${h.id}`, { method: 'PATCH', body: { color } });
+      highlights.set(updated.id, updated);
+      refreshMark(updated);
+      if (toolbarFor === 'mark') {
+        const mark = text.querySelector(`mark[data-id="${h.id}"]`);
+        if (mark) showMarkToolbar(mark);
+      }
+    } catch (e) { toast(e.message); }
   }
 
   function showSelectionToolbar() {
     const sel = window.getSelection();
-    if (sel.isCollapsed || !sel.rangeCount) return hideToolbar();
+    // A plain click on a highlight opens its own toolbar (the click handler runs before this does): leave it up.
+    if (sel.isCollapsed || !sel.rangeCount) return toolbarFor === 'mark' ? undefined : hideToolbar();
     const range = sel.getRangeAt(0);
     if (!text.contains(range.commonAncestorContainer) || sel.toString().trim().length < 2) return hideToolbar();
     toolbarFor = 'selection';
+    // Pick a colour to highlight in it (like Apple Books); Note uses the last colour picked.
     fill(toolbar,
-      el('button', { type: 'button', onmousedown: (e) => e.preventDefault(), onclick: () => createHighlight(false) }, icon('highlighter'), 'Highlight'),
+      swatches(null, (color) => createHighlight(false, color)),
       el('button', { type: 'button', onmousedown: (e) => e.preventDefault(), onclick: () => createHighlight(true) }, icon('note'), 'Note'));
     placeToolbar(range.getBoundingClientRect());
   }
@@ -1489,6 +1524,7 @@ async function renderRead(docId, chapterPart, params) {
     if (!h) return;
     toolbarFor = 'mark';
     fill(toolbar,
+      swatches(h.color || 'yellow', (color) => recolour(h, color)),
       el('button', { type: 'button', onclick: () => { hideToolbar(); editHighlight(h, (u) => { highlights.set(u.id, u); refreshMark(u); }); } }, icon('note'), h.note ? 'Edit note' : 'Note'),
       el('button', { type: 'button', onclick: () => { hideToolbar(); editHighlight(h, (u) => { highlights.set(u.id, u); refreshMark(u); }, 'tags'); } }, icon('tag'), 'Tag'),
       el('button', {
@@ -1581,7 +1617,7 @@ async function renderRead(docId, chapterPart, params) {
       const list = await api(`docs/${doc.id}/highlights`);
       if (currentTab !== 'highlights') return;
       fill(panelBody, list.length
-        ? list.map((h) => el('a', { class: `panel-item panel-jump${h.chapter === chapter ? ' current' : ''}`, href: `#/read/${doc.id}/${h.chapter}?hl=${h.id}`, onclick: () => { tocPanel.hidden = true; } },
+        ? list.map((h) => el('a', { class: `panel-item panel-jump panel-hl ${hlClass(h)}${h.chapter === chapter ? ' current' : ''}`, href: `#/read/${doc.id}/${h.chapter}?hl=${h.id}`, onclick: () => { tocPanel.hidden = true; } },
           el('span', { class: 'panel-quote serif' }, h.text.length > 160 ? `${h.text.slice(0, 160)}…` : h.text),
           h.note ? el('span', { class: 'panel-note' }, h.note) : null,
           el('small', {}, chapterLabel(h.chapter))))

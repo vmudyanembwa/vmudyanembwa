@@ -160,6 +160,7 @@ main { max-width: 1080px; margin: 0 auto; padding: 32px 20px 80px; outline: none
 
 /* ---------- Highlights ---------- */
 .quote { font-family: var(--serif); font-size: 1.12rem; line-height: 1.65; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
+.quote.tinted { padding-left: 14px; border-left: 3px solid var(--hl); }
 .note {
   margin-top: 12px; padding: 10px 14px; border-radius: 8px; background: var(--note-bg);
   border-left: 3px solid var(--note-border); font-size: .92rem; white-space: pre-wrap;
@@ -377,13 +378,13 @@ dialog::backdrop { background: rgba(15, 18, 24, .45); backdrop-filter: blur(2px)
 
 /* ---------- Reader: reading view ---------- */
 /* Page colours. Dark is Apple Books' grey night page; Night is the near-black one. */
-body.reading { --r-bg: #ffffff; --r-text: #1c1c1e; --r-muted: #6e6e73; --r-border: #e5e5ea; --r-mark: #ffe58a; --r-mark-note: #ffd24d;
+body.reading { --r-bg: #ffffff; --r-text: #1c1c1e; --r-muted: #6e6e73; --r-border: #e5e5ea; --r-mark-mix: 52%;
   --r-bar: #f2f2f4; --r-bar-line: #dcdce0; --r-pill: rgba(0, 0, 0, .055); --r-title: #4a4a50; }
-body.reading[data-reader-theme="sepia"] { --r-bg: #f6efe1; --r-text: #4a3b28; --r-muted: #8a7558; --r-border: #e5d9c2; --r-mark: #f3d77a; --r-mark-note: #ebc554;
+body.reading[data-reader-theme="sepia"] { --r-bg: #f6efe1; --r-text: #4a3b28; --r-muted: #8a7558; --r-border: #e5d9c2; --r-mark-mix: 50%;
   --r-bar: #ebe1cd; --r-bar-line: #dccfb5; --r-pill: rgba(74, 59, 40, .08); --r-title: #6b5a42; }
-body.reading[data-reader-theme="dark"] { --r-bg: #4a4a4d; --r-text: #ebebed; --r-muted: #a3a3a8; --r-border: #5c5c60; --r-mark: #8a7120; --r-mark-note: #a3841f;
+body.reading[data-reader-theme="dark"] { --r-bg: #4a4a4d; --r-text: #ebebed; --r-muted: #a3a3a8; --r-border: #5c5c60; --r-mark-mix: 42%;
   --r-bar: #272729; --r-bar-line: #1d1d1f; --r-pill: #3c3c3f; --r-title: #a0a0a4; color-scheme: dark; }
-body.reading[data-reader-theme="night"] { --r-bg: #16171b; --r-text: #d9dbe1; --r-muted: #8e93a0; --r-border: #2a2d34; --r-mark: #5c4a12; --r-mark-note: #7a6216;
+body.reading[data-reader-theme="night"] { --r-bg: #16171b; --r-text: #d9dbe1; --r-muted: #8e93a0; --r-border: #2a2d34; --r-mark-mix: 34%;
   --r-bar: #0e0f12; --r-bar-line: #000; --r-pill: #22242a; --r-title: #8e93a0; color-scheme: dark; }
 body.reading { background: var(--r-bg); }
 body.reading .topbar { display: none; }  /* the reader has its own bar; the shelf button goes back */
@@ -433,8 +434,13 @@ body.reading main { max-width: 760px; padding-top: 52px; }
 .reader-text pre { white-space: pre-wrap; font-size: .85em; background: color-mix(in srgb, var(--r-text) 6%, transparent); padding: .8em; border-radius: 6px; }
 .reader-text hr { border: none; border-top: 1px solid var(--r-border); margin: 2em 0; }
 .reader-text ::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); }
-mark.hl-mark { background: var(--r-mark); color: inherit; border-radius: 2px; padding: 0 1px; cursor: pointer; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
-mark.hl-mark.has-note { background: var(--r-mark-note); border-bottom: 2px dotted color-mix(in srgb, var(--r-text) 45%, transparent); }
+/* Highlight colours (Apple Books' set). --hl is the pure colour; the page theme decides how strongly it tints. */
+.hl-yellow { --hl: #ffd60a; } .hl-green { --hl: #5fd068; } .hl-blue { --hl: #5eb0ff; }
+.hl-pink { --hl: #ff6fae; } .hl-purple { --hl: #b98cff; } .hl-underline { --hl: #ff3b30; }
+mark.hl-mark { background: color-mix(in srgb, var(--hl, #ffd60a) var(--r-mark-mix, 52%), transparent); color: inherit;
+  border-radius: 2px; padding: 0 1px; cursor: pointer; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+mark.hl-mark.hl-underline { background: none; text-decoration: underline 2px var(--hl); text-underline-offset: 3px; text-decoration-skip-ink: none; }
+mark.hl-mark.has-note { border-bottom: 2px dotted color-mix(in srgb, var(--r-text) 45%, transparent); }
 mark.hl-mark.flash { animation: flash 1.6s ease 2; }
 @keyframes flash { 50% { background: color-mix(in srgb, var(--accent) 45%, transparent); } }
 .reader-note { text-align: center; }
@@ -457,6 +463,12 @@ mark.hl-mark.flash { animation: flash 1.6s ease 2; }
 }
 .sel-toolbar button:hover { background: rgba(255,255,255,.12); }
 .sel-toolbar svg.icon { width: 16px; height: 16px; }
+.sel-toolbar .swatches { display: flex; align-items: center; gap: 2px; padding-right: 4px; margin-right: 2px; border-right: 1px solid rgba(255,255,255,.18); }
+.sel-toolbar button.swatch { padding: 5px; }
+.swatch-dot { display: block; width: 20px; height: 20px; border-radius: 50%; background: var(--hl); box-shadow: inset 0 0 0 1px rgba(0,0,0,.15); }
+.swatch-dot.hl-underline { background: #fff; color: #16181d; font: 700 13px/20px var(--serif); text-align: center;
+  text-decoration: underline 2px var(--hl); text-underline-offset: 2px; }
+.sel-toolbar button.swatch[aria-pressed="true"] .swatch-dot { outline: 2px solid #fff; outline-offset: 2px; }
 
 .reader-panel {
   position: fixed; z-index: 12; background: var(--surface); color: var(--text); border: 1px solid var(--border);
@@ -562,6 +574,7 @@ body.reading.paged .page-turn:not(:disabled):hover { opacity: 1; }
 .panel-item.current { box-shadow: inset 3px 0 0 var(--accent); }
 .panel-jump { flex: 1; min-width: 0; display: grid; gap: 3px; text-align: left; font: inherit; color: inherit; background: none; border: none; cursor: pointer; padding: 9px 10px; }
 a.panel-item.panel-jump { display: grid; }
+a.panel-item.panel-hl { border-left: 3px solid var(--hl); border-radius: 3px 8px 8px 3px; }
 .panel-quote { font-size: .88rem; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .panel-quote.serif { font-family: var(--serif); font-size: .95rem; }
 .panel-note { font-size: .8rem; color: var(--text-2); background: var(--note-bg); border-radius: 5px; padding: 3px 7px; }
@@ -603,14 +616,15 @@ body.immersive .page-wrap { margin-top: 40px; }
 .textLayer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: 0; cursor: default; user-select: none; }
 .textLayer.selecting .endOfContent { top: 0; }
 /* Highlights on a PDF: tinted boxes over the printed words. */
-.textLayer mark.hl-mark { color: transparent; background: rgba(255, 213, 0, .42); border-radius: 1px; padding: 0; mix-blend-mode: multiply; }
-.textLayer mark.hl-mark.has-note { background: rgba(255, 190, 0, .55); border-bottom: none; }
+.textLayer mark.hl-mark { color: transparent; background: color-mix(in srgb, var(--hl) 45%, transparent); border-radius: 1px; padding: 0; mix-blend-mode: multiply; }
+.textLayer mark.hl-mark.has-note { border-bottom: none; }
+.textLayer mark.hl-mark.hl-underline { background: none; text-decoration: none; border-bottom: 2px solid var(--hl); }
 /* Themes: dark inverts the page (as most PDF readers do), sepia warms it. */
 body.reading:is([data-reader-theme="dark"], [data-reader-theme="night"]) .pdf-page { background: #16171b; }
 body.reading:is([data-reader-theme="dark"], [data-reader-theme="night"]) .pdf-page canvas { filter: invert(.9) hue-rotate(180deg); }
 body.reading[data-reader-theme="dark"] .pdf-page { background: #333335; }
 body.reading[data-reader-theme="dark"] .pdf-page canvas { filter: invert(.8) hue-rotate(180deg); }  /* softer, to sit on the grey */
-body.reading:is([data-reader-theme="dark"], [data-reader-theme="night"]) .textLayer mark.hl-mark { background: rgba(255, 200, 0, .35); mix-blend-mode: screen; }
+body.reading:is([data-reader-theme="dark"], [data-reader-theme="night"]) .textLayer mark.hl-mark:not(.hl-underline) { background: color-mix(in srgb, var(--hl) 35%, transparent); mix-blend-mode: screen; }
 body.reading[data-reader-theme="sepia"] .pdf-page canvas { filter: sepia(.35) brightness(.97); }
 .page-jump { display: flex; align-items: center; gap: 8px; padding: 10px; border-bottom: 1px solid var(--border); margin-bottom: 6px; font-size: .88rem; }
 .page-jump input { width: 72px; font: inherit; padding: 5px 8px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); color: var(--text); }
